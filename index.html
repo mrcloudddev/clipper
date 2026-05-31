@@ -298,18 +298,16 @@ function getVideoDuration() {
       const v = document.createElement('video');
       v.preload = 'metadata';
       v.src = url;
-      const cleanup = () => { try { v.src=''; } catch(e){} };
-      const done = (d) => { cleanup(); resolve((isFinite(d) && d > 0) ? d : 0); };
-    v.addEventListener('loadedmetadata', () => {
-      const d = v.duration;
-      if (isFinite(d) && d > 0) { done(d); return; }
-      // WebM tanpa durasi: seek ke akhir agar browser baca durasi
-      v.addEventListener('seeked', () => done(v.duration), { once: true });
-      v.currentTime = 1e101;
-    }, { once: true });
-    v.onerror = () => done(0);
-    setTimeout(() => done(0), 8000);
-    }; // end _fr.onload
+      const done = (d) => { try { v.src=''; } catch(ex){} resolve((isFinite(d) && d > 0) ? d : 0); };
+      v.addEventListener('loadedmetadata', () => {
+        const d = v.duration;
+        if (isFinite(d) && d > 0) { done(d); return; }
+        v.addEventListener('seeked', () => done(v.duration), { once: true });
+        v.currentTime = 1e101;
+      }, { once: true });
+      v.onerror = () => done(0);
+      setTimeout(() => done(0), 8000);
+    };
     _fr.readAsDataURL(_videoFile);
   });
 }
@@ -597,38 +595,9 @@ async function extractAudioBlob(file, startSec, durationSec) {
 }
 
 async function generateSubtitles(clip, durationSec) {
+  // Use local fallback only — avoids CORS issues on GitHub Pages
   const hookText = clip ? (clip.hook || clip.title) : '';
-  if(!hookText) return fallbackSubs(hookText, durationSec);
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 800,
-        messages: [{
-          role: 'user',
-          content: `Buat subtitle timed untuk klip video berdurasi ${Math.round(durationSec)} detik.
-Judul klip: "${clip.title}"
-Hook/kalimat utama: "${hookText}"
-
-Pecah kalimat tersebut menjadi segmen pendek (3-6 kata per baris), lalu sebarkan waktunya dari detik 0 sampai ${Math.round(durationSec)}.
-Tambahkan juga beberapa subtitle pendek yang relevan di antara segmen untuk mengisi durasi.
-
-Balas HANYA JSON array, tidak ada teks lain:
-[{"t":0,"text":"teks subtitle"},{"t":3,"text":"lanjutan teks"}]`
-        }]
-      })
-    });
-    if(!resp.ok) return fallbackSubs(hookText, durationSec);
-    const data = await resp.json();
-    const raw = data.content.map(b => b.text||'').join('').replace(/```json|```/g,'').trim();
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallbackSubs(hookText, durationSec);
-  } catch(e) {
-    console.warn('Subtitle generation failed:', e);
-    return fallbackSubs(hookText, durationSec);
-  }
+  return fallbackSubs(hookText, durationSec);
 }
 
 function fallbackSubs(hookText, durationSec) {
@@ -643,13 +612,13 @@ function fallbackSubs(hookText, durationSec) {
   }));
 }
 
-// ─── Canvas-based video cutter — 9:16, smooth + audio + timed subtitle ──
+// ─── Canvas-based video cutter (GitHub Pages compatible) ─────────
 function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[], quality='720p') {
   return new Promise((resolve, reject) => {
     const qualityMap = {
-      '360p': { w:360,  h:640,  vbr:1_500_000 },
-      '720p': { w:720,  h:1280, vbr:5_000_000 },
-      '1080p':{ w:1080, h:1920, vbr:10_000_000 },
+      '360p': { w:360,  h:640,  vbr:1_200_000 },
+      '720p': { w:720,  h:1280, vbr:4_000_000 },
+      '1080p':{ w:1080, h:1920, vbr:8_000_000 },
     };
     const { w: OUT_W, h: OUT_H, vbr: VBR } = qualityMap[quality] || qualityMap['720p'];
 
@@ -657,182 +626,185 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
     canvas.width = OUT_W; canvas.height = OUT_H;
     const ctx = canvas.getContext('2d', { alpha: false });
 
-    const mimeTypes = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
-    ];
-    const mimeType = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+    // Find supported mime type
+    const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+    const mimeType = mimeTypes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e){ return false; } }) || 'video/webm';
 
-    // Use FileReader → data URL so it works inside sandboxed iframes (no blob URL restriction)
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Gagal membaca file video'));
-    reader.onload = (readerEvt) => {
-      const videoSrc = readerEvt.target.result;
+    // Use FileReader to avoid blob URL sandbox issues
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('Gagal membaca file video'));
+    fr.onload = (evt) => {
+      const videoSrc = evt.target.result;
       const video = document.createElement('video');
       video.src = videoSrc;
       video.muted = true;
       video.preload = 'auto';
       video.playsInline = true;
-      video.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px';
+      video.crossOrigin = 'anonymous';
+      video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:2px;height:2px;top:-9999px;left:-9999px';
       document.body.appendChild(video);
 
-      const cleanup = () => {
-        try { document.body.removeChild(video); } catch(e){}
-      };
+      const cleanup = () => { try { document.body.removeChild(video); } catch(e){} };
 
-    video.addEventListener('loadedmetadata', () => {
-      const rawDur = video.duration;
+      const onErr = () => { cleanup(); reject(new Error('Gagal membaca file video')); };
+      video.onerror = onErr;
 
-      const startRecording = (videoDur) => {
-        const requestedDur = endSec - startSec; // durasi yang user pilih — TIDAK berubah
+      const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout membaca video')); }, 30000);
 
-        let safeStart = Math.max(0, startSec);
-        let safeEnd = (isFinite(videoDur) && videoDur < 99999)
-          ? Math.min(endSec, videoDur) : endSec;
-        // Geser mundur jika terpotong, agar tetap dapat requestedDur penuh
-        if (isFinite(videoDur) && videoDur < 99999 && (safeEnd - safeStart) < requestedDur) {
-          safeStart = Math.max(0, safeEnd - requestedDur);
-        }
-        if (safeEnd - safeStart <= 0) { cleanup(); reject(new Error('Video terlalu pendek untuk klip ini')); return; }
+      video.addEventListener('loadedmetadata', () => {
+        clearTimeout(hardTimeout);
+        const rawDur = video.duration;
 
-        // Pre-calculate crop (9:16)
-        const vw = video.videoWidth  || OUT_W;
-        const vh = video.videoHeight || OUT_H;
-        const targetRatio = OUT_W / OUT_H;
-        const srcRatio    = vw / vh;
-        let sx=0, sy=0, sw=vw, sh=vh;
-        if (srcRatio > targetRatio) { sw = Math.round(vh * targetRatio); sx = Math.round((vw - sw) / 2); }
-        else                        { sh = Math.round(vw / targetRatio); sy = Math.round((vh - sh) / 2); }
-
-        let combinedStream;
-        let audioCtx = null;
-        const canvasStream = canvas.captureStream(30);
-
-        const setupAudio = () => {
-          try {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            video.muted = false;
-            const src  = audioCtx.createMediaElementSource(video);
-            const dest = audioCtx.createMediaStreamDestination();
-            src.connect(dest);
-            src.connect(audioCtx.destination);
-            combinedStream = new MediaStream([
-              canvasStream.getVideoTracks()[0],
-              dest.stream.getAudioTracks()[0]
-            ]);
-          } catch(e) {
-            console.warn('Audio setup failed:', e);
-            video.muted = false;
-            combinedStream = canvasStream;
+        const doRecord = (videoDur) => {
+          const requestedDur = Math.max(1, endSec - startSec);
+          let safeStart = Math.max(0, startSec);
+          let safeEnd = (isFinite(videoDur) && videoDur < 86400) ? Math.min(endSec, videoDur) : endSec;
+          if (isFinite(videoDur) && videoDur < 86400 && (safeEnd - safeStart) < requestedDur) {
+            safeStart = Math.max(0, safeEnd - requestedDur);
           }
-        };
+          if (safeEnd - safeStart <= 0) { cleanup(); reject(new Error('Video terlalu pendek')); return; }
 
-        video.currentTime = safeStart;
+          const vw = video.videoWidth  || OUT_W;
+          const vh = video.videoHeight || OUT_H;
+          const targetRatio = OUT_W / OUT_H;
+          const srcRatio    = vw / vh;
+          let sx=0, sy=0, sw=vw, sh=vh;
+          if (srcRatio > targetRatio) { sw = Math.round(vh * targetRatio); sx = Math.round((vw-sw)/2); }
+          else                        { sh = Math.round(vw / targetRatio); sy = Math.round((vh-sh)/2); }
 
-        video.addEventListener('seeked', () => {
-          setupAudio();
-          const chunks = [];
-          const rec = new MediaRecorder(combinedStream, {
-            mimeType,
-            videoBitsPerSecond: VBR,
-            audioBitsPerSecond: 128_000,
-          });
-          rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+          video.currentTime = safeStart;
 
-          const FPS = 30, frameDur = 1000 / FPS;
-          let lastFrameAt = 0, rafHandle = null;
+          video.addEventListener('seeked', () => {
+            // Setup audio
+            let combinedStream;
+            let audioCtx = null;
+            const canvasStream = canvas.captureStream(30);
 
-          const drawFrame = (now) => {
-            rafHandle = requestAnimationFrame(drawFrame);
-            if (now - lastFrameAt < frameDur - 1) return;
-            lastFrameAt = now;
-            const elapsed  = Math.min(video.currentTime - safeStart, requestedDur);
-            const progress = Math.min(1, Math.max(elapsed, 0) / requestedDur);
-            ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H);
-            const barH = Math.round(OUT_H * 0.006), barY = OUT_H - barH;
-            ctx.globalAlpha = 0.4; ctx.fillStyle = 'rgba(0,0,0,0.3)';
-            ctx.fillRect(0, barY, OUT_W, barH); ctx.globalAlpha = 1;
-            const bg = ctx.createLinearGradient(0, 0, OUT_W, 0);
-            bg.addColorStop(0,'#7c3aed'); bg.addColorStop(0.5,'#a78bfa'); bg.addColorStop(1,'#c4b5fd');
-            ctx.fillStyle = bg; ctx.fillRect(0, barY, OUT_W * progress, barH); ctx.globalAlpha = 1;
-            let liveText = '';
-            if (subtitleOn && timedSubs.length > 0) {
-              const subTime = Math.max(0, elapsed);
-              let active = null;
-              for (const s of timedSubs) { if (s.t <= subTime + 0.2) active = s; else break; }
-              const nextSub   = timedSubs.find(s => s.t > (active ? active.t : -1));
-              const hideAfter = nextSub ? nextSub.t : (active ? active.t + 4 : 0);
-              liveText = (active && subTime < hideAfter) ? active.text : '';
+            try {
+              audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+              video.muted = false;
+              const src  = audioCtx.createMediaElementSource(video);
+              const dest = audioCtx.createMediaStreamDestination();
+              src.connect(dest);
+              src.connect(audioCtx.destination);
+              const audioTrack = dest.stream.getAudioTracks()[0];
+              combinedStream = audioTrack
+                ? new MediaStream([canvasStream.getVideoTracks()[0], audioTrack])
+                : canvasStream;
+            } catch(e) {
+              console.warn('Audio setup failed, video only:', e);
+              video.muted = false;
+              combinedStream = canvasStream;
             }
-            if (liveText) {
-              const fontSize = Math.round(OUT_W * 0.058);
-              ctx.font = `700 ${fontSize}px Arial, sans-serif`; ctx.textAlign = 'center';
-              const words = liveText.split(' '), maxW = OUT_W * 0.82;
-              const lines = []; let cur = '';
-              for (const w of words) {
-                const test = cur ? cur+' '+w : w;
-                if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = w; } else cur = test;
+
+            // Start recorder
+            let rec;
+            try {
+              rec = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 });
+            } catch(e) {
+              rec = new MediaRecorder(combinedStream);
+            }
+
+            const chunks = [];
+            rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+            const FPS = 30, frameDur = 1000 / FPS;
+            let lastFrameAt = 0, rafHandle = null;
+
+            const drawFrame = (now) => {
+              rafHandle = requestAnimationFrame(drawFrame);
+              if (now - lastFrameAt < frameDur - 1) return;
+              lastFrameAt = now;
+              const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
+              const progress = Math.min(1, elapsed / requestedDur);
+
+              // Draw video frame
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
+
+              // Progress bar
+              const barH = Math.max(4, Math.round(OUT_H * 0.006)), barY = OUT_H - barH;
+              ctx.globalAlpha = 0.5; ctx.fillStyle = 'rgba(0,0,0,0.4)';
+              ctx.fillRect(0, barY, OUT_W, barH); ctx.globalAlpha = 1;
+              const grad = ctx.createLinearGradient(0, 0, OUT_W, 0);
+              grad.addColorStop(0,'#7c3aed'); grad.addColorStop(0.5,'#a78bfa'); grad.addColorStop(1,'#c4b5fd');
+              ctx.fillStyle = grad; ctx.fillRect(0, barY, OUT_W * progress, barH);
+
+              // Subtitles
+              if (subtitleOn && timedSubs.length > 0) {
+                const subTime = elapsed;
+                let active = null;
+                for (const s of timedSubs) { if (s.t <= subTime + 0.2) active = s; else break; }
+                const nextSub = timedSubs.find(s => s.t > (active ? active.t : -1));
+                const hideAfter = nextSub ? nextSub.t : (active ? active.t + 4 : 0);
+                const liveText = (active && subTime < hideAfter) ? active.text : '';
+                if (liveText) {
+                  const fontSize = Math.round(OUT_W * 0.058);
+                  ctx.font = `700 ${fontSize}px Arial, sans-serif`; ctx.textAlign = 'center';
+                  const words = liveText.split(' '), maxW = OUT_W * 0.82;
+                  const lines = []; let cur = '';
+                  for (const w of words) {
+                    const test = cur ? cur+' '+w : w;
+                    if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = w; } else cur = test;
+                  }
+                  if (cur) lines.push(cur);
+                  const shown = lines.slice(-3), lineH = fontSize * 1.35, padX=28, padY=14;
+                  const boxW = Math.min(maxW+padX*2, OUT_W*0.92), boxH = shown.length*lineH+padY*2;
+                  const boxX = (OUT_W-boxW)/2, boxY = OUT_H*0.80-boxH;
+                  ctx.globalAlpha = 0.82; ctx.fillStyle = '#000';
+                  roundRect(ctx, boxX, boxY, boxW, boxH, 12); ctx.fill();
+                  ctx.globalAlpha = 1; ctx.fillStyle = '#fff';
+                  ctx.shadowColor = 'rgba(0,0,0,1)'; ctx.shadowBlur = 7;
+                  shown.forEach((ln, i) => ctx.fillText(ln, OUT_W/2, boxY+padY+fontSize+i*lineH));
+                  ctx.shadowBlur = 0;
+                }
               }
-              if (cur) lines.push(cur);
-              const shown = lines.slice(-3), lineH = fontSize * 1.35, padX=28, padY=14;
-              const boxW = Math.min(maxW+padX*2, OUT_W*0.92), boxH = shown.length*lineH+padY*2;
-              const boxX = (OUT_W-boxW)/2, boxY = OUT_H*0.80-boxH;
-              ctx.globalAlpha = 0.82; ctx.fillStyle = '#000';
-              roundRect(ctx, boxX, boxY, boxW, boxH, 12); ctx.fill();
-              ctx.globalAlpha = 1; ctx.fillStyle = '#fff';
-              ctx.shadowColor = 'rgba(0,0,0,1)'; ctx.shadowBlur = 7;
-              shown.forEach((ln, i) => ctx.fillText(ln, OUT_W/2, boxY+padY+fontSize+i*lineH));
-              ctx.shadowBlur = 0;
-            }
-          };
+            };
 
-          const progressInterval = setInterval(() => {
-            const elapsed = Math.max(0, Math.min(video.currentTime - safeStart, requestedDur));
-            const pct = Math.min(95, 20 + (elapsed / requestedDur) * 75);
-            setModalBar(pct, `Merekam ${Math.round(elapsed)}s / ${Math.round(requestedDur)}s...`);
-          }, 400);
+            const progressInterval = setInterval(() => {
+              const elapsed = Math.max(0, Math.min(video.currentTime - safeStart, requestedDur));
+              const pct = Math.min(95, 20 + (elapsed / requestedDur) * 75);
+              setModalBar(pct, `Merekam ${Math.round(elapsed)}s / ${Math.round(requestedDur)}s...`);
+            }, 400);
 
-          rec.onstop = () => {
-            cancelAnimationFrame(rafHandle);
-            clearInterval(progressInterval);
-            if (audioCtx) try { audioCtx.close(); } catch(e){}
-            cleanup();
-            resolve(new Blob(chunks, { type: mimeType }));
-          };
+            rec.onstop = () => {
+              cancelAnimationFrame(rafHandle);
+              clearInterval(progressInterval);
+              if (audioCtx) try { audioCtx.close(); } catch(e){}
+              cleanup();
+              if (chunks.length === 0) { reject(new Error('Tidak ada data video terekam')); return; }
+              resolve(new Blob(chunks, { type: mimeType }));
+            };
 
-          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H);
-          rec.start(100);
-          rafHandle = requestAnimationFrame(drawFrame);
-          video.playbackRate = 1;
-          video.play().catch(e => console.warn('play() error:', e));
+            // Draw first frame before starting
+            try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
+            rec.start(200);
+            rafHandle = requestAnimationFrame(drawFrame);
+            video.playbackRate = 1;
+            video.play().catch(e => console.warn('play() error:', e));
 
-          // Rekam tepat requestedDur detik — kalau video ended duluan, freeze frame
-          const stopTimeout = setTimeout(() => { video.pause(); rec.stop(); }, requestedDur * 1000 + 500);
-          video.addEventListener('ended', () => { /* freeze — stopTimeout yang kontrol */ }, { once: true });
+            setTimeout(() => {
+              try { video.pause(); rec.stop(); } catch(e){ cleanup(); reject(e); }
+            }, requestedDur * 1000 + 800);
 
-        }, { once: true });
-      }; // end startRecording
+          }, { once: true });
+        }; // end doRecord
 
-      if (!isFinite(rawDur) || isNaN(rawDur) || rawDur <= 0) {
-        // WebM tanpa durasi: seek ke akhir dulu
-        video.addEventListener('seeked', () => {
-          const fixedDur = video.duration;
-          startRecording(isFinite(fixedDur) && fixedDur > 0 ? fixedDur : 99999);
-        }, { once: true });
-        video.currentTime = 1e101;
-      } else {
-        startRecording(rawDur);
-      }
-    }, { once: true });
+        if (!isFinite(rawDur) || isNaN(rawDur) || rawDur <= 0) {
+          video.addEventListener('seeked', () => {
+            const d = video.duration;
+            doRecord(isFinite(d) && d > 0 ? d : 86400);
+          }, { once: true });
+          video.currentTime = 1e101;
+        } else {
+          doRecord(rawDur);
+        }
+      }, { once: true });
 
-    video.onerror = () => {
-      cleanup();
-      reject(new Error('Gagal membaca file video'));
+      video.load();
     };
-    }; // end reader.onload
-    reader.readAsDataURL(file);
+    fr.readAsDataURL(file);
   });
 }
 

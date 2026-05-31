@@ -291,24 +291,24 @@ function secToMMSS(s) {
 function getVideoDuration() {
   return new Promise(resolve => {
     if (!_videoFile) { resolve(0); return; }
-    const _fr = new FileReader();
-    _fr.onerror = () => resolve(0);
-    _fr.onload = (e) => {
-      const url = e.target.result;
-      const v = document.createElement('video');
-      v.preload = 'metadata';
-      v.src = url;
-      const done = (d) => { try { v.src=''; } catch(ex){} resolve((isFinite(d) && d > 0) ? d : 0); };
-      v.addEventListener('loadedmetadata', () => {
-        const d = v.duration;
-        if (isFinite(d) && d > 0) { done(d); return; }
-        v.addEventListener('seeked', () => done(v.duration), { once: true });
-        v.currentTime = 1e101;
-      }, { once: true });
-      v.onerror = () => done(0);
-      setTimeout(() => done(0), 8000);
+    let bUrl = null;
+    try { bUrl = URL.createObjectURL(_videoFile); } catch(e) { resolve(0); return; }
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.src = bUrl;
+    const done = (d) => {
+      try { v.src=''; } catch(ex){}
+      if (bUrl) { URL.revokeObjectURL(bUrl); bUrl = null; }
+      resolve((isFinite(d) && d > 0) ? d : 0);
     };
-    _fr.readAsDataURL(_videoFile);
+    v.addEventListener('loadedmetadata', () => {
+      const d = v.duration;
+      if (isFinite(d) && d > 0) { done(d); return; }
+      v.addEventListener('seeked', () => done(v.duration), { once: true });
+      v.currentTime = 1e101;
+    }, { once: true });
+    v.onerror = () => done(0);
+    setTimeout(() => done(0), 8000);
   });
 }
 
@@ -540,12 +540,10 @@ function getAudioCtx() {
 // ─── Audio extraction + AI transcription → timed subtitles ───────
 async function extractAudioBlob(file, startSec, durationSec) {
   return new Promise((resolve) => {
-    const _afr = new FileReader();
-    _afr.onerror = () => resolve(null);
-    _afr.onload = (e) => {
-    const url = e.target.result;
+    let bUrl = null;
+    try { bUrl = URL.createObjectURL(file); } catch(e) { resolve(null); return; }
     const vid = document.createElement('video');
-    vid.src = url;
+    vid.src = bUrl;
     vid.muted = false;
     vid.preload = 'auto';
     vid.style.cssText = 'position:fixed;opacity:0.01;width:2px;height:2px;pointer-events:none;top:0;left:0';
@@ -553,6 +551,7 @@ async function extractAudioBlob(file, startSec, durationSec) {
 
     const cleanup = () => {
       try { document.body.removeChild(vid); } catch(e){}
+      if (bUrl) { URL.revokeObjectURL(bUrl); bUrl = null; }
     };
 
     vid.addEventListener('loadedmetadata', () => {
@@ -589,8 +588,6 @@ async function extractAudioBlob(file, startSec, durationSec) {
 
     vid.onerror = () => { cleanup(); resolve(null); };
     setTimeout(() => { cleanup(); resolve(null); }, durationSec * 1000 + 8000); // hard timeout
-    }; // end _afr.onload
-    _afr.readAsDataURL(file);
   });
 }
 
@@ -630,23 +627,30 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
     const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
     const mimeType = mimeTypes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e){ return false; } }) || 'video/webm';
 
-    // Use FileReader to avoid blob URL sandbox issues
-    const fr = new FileReader();
-    fr.onerror = () => reject(new Error('Gagal membaca file video'));
-    fr.onload = (evt) => {
-      const videoSrc = evt.target.result;
+    // Use createObjectURL — no memory copy, works for large files
+    let _blobUrl = null;
+    const _setupVideo = () => {
+      try {
+        _blobUrl = URL.createObjectURL(file);
+      } catch(e) {
+        reject(new Error('Gagal membaca file video: ' + e.message));
+        return;
+      }
+      const videoSrc = _blobUrl;
       const video = document.createElement('video');
       video.src = videoSrc;
       video.muted = true;
       video.preload = 'auto';
       video.playsInline = true;
-      video.crossOrigin = 'anonymous';
       video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:2px;height:2px;top:-9999px;left:-9999px';
       document.body.appendChild(video);
 
-      const cleanup = () => { try { document.body.removeChild(video); } catch(e){} };
+      const cleanup = () => {
+        try { document.body.removeChild(video); } catch(e){}
+        if (_blobUrl) { URL.revokeObjectURL(_blobUrl); _blobUrl = null; }
+      };
 
-      const onErr = () => { cleanup(); reject(new Error('Gagal membaca file video')); };
+      const onErr = () => { cleanup(); reject(new Error('Gagal memutar file video — pastikan format MP4/MOV/AVI')); };
       video.onerror = onErr;
 
       const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout membaca video')); }, 30000);
@@ -804,7 +808,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
       video.load();
     };
-    fr.readAsDataURL(file);
+    _setupVideo();
   });
 }
 

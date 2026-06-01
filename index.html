@@ -132,7 +132,7 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
                   <div id="beatCount" style="font-size:20px;font-weight:800;color:#fbbf24;font-family:'Syne',sans-serif">—</div>
                 </div>
               </div>
-              <div style="font-size:10px;color:rgba(134,239,172,0.8);margin-top:7px;text-align:center">✓ Siap! Efek JJ akan sync ke beat musikmu</div>
+              <div style="font-size:10px;color:rgba(134,239,172,0.8);margin-top:7px;text-align:center">✓ Siap! Efek JJ sync ke beat · <span style="color:#86efac">▶ hijau</span> = mulai · <span style="color:#f87171">↺ merah</span> = loop</div>
             </div>
           </div>
         </div>
@@ -816,20 +816,30 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             video.muted = true;
             const dest = audioCtx.createMediaStreamDestination();
 
-            const playMusik = (buf) => {
+            const playMusik = (buf, loopStart, loopEnd) => {
               const src = audioCtx.createBufferSource();
-              src.buffer = buf; src.loop = true;
+              src.buffer = buf;
+
+              // Set loop boundaries ke beat/bar boundary yang bersih
+              if (loopStart > 0 || loopEnd > loopStart) {
+                src.loop      = true;
+                src.loopStart = loopStart;  // mulai dari downbeat pertama, bukan dari detik 0
+                src.loopEnd   = loopEnd > loopStart + 1 ? loopEnd : buf.duration; // loop kembali ke loopStart
+              } else {
+                src.loop = true; // fallback: loop normal
+              }
+
               const gain = audioCtx.createGain(); gain.gain.value = 0.9;
               src.connect(gain); gain.connect(dest); gain.connect(audioCtx.destination);
-              src.start(0);
+              // start(when=0, offset=loopStart) — mulai playback dari downbeat pertama
+              src.start(0, loopStart);
             };
 
             if (_useCustomMusik && _customMusikBuffer) {
-              // Gunakan musik custom yang sudah di-decode
-              playMusik(_customMusikBuffer);
+              playMusik(_customMusikBuffer, _customMusikLoopStart, _customMusikLoopEnd);
             } else {
               loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2)
-                .then(playMusik)
+                .then(buf => playMusik(buf, 0, buf.duration))
                 .catch(e => console.warn('loadTrackBuffer:', e));
             }
             combinedStream = new MediaStream([canvasStream.getVideoTracks()[0], ...dest.stream.getAudioTracks()]);
@@ -877,9 +887,13 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             let beatIdx, halfIdx, quarterIdx, barIdx;
 
             if (USE_CUSTOM_BEATS) {
-              // Mode custom: cari beat index berdasarkan timestamp aktual
-              // elapsed = posisi di klip; musik loop dari 0, jadi map ke posisi musik
-              const musikPos = elapsed % (_customMusikBuffer ? _customMusikBuffer.duration : 999);
+              // elapsed = posisi di klip video
+              // Musik sudah mulai dari loopStart, jadi posisi musik = elapsed mod loopDuration
+              const loopDur = (_customMusikLoopEnd > _customMusikLoopStart)
+                ? (_customMusikLoopEnd - _customMusikLoopStart)
+                : (_customMusikBuffer ? _customMusikBuffer.duration - _customMusikLoopStart : 60);
+              const musikPos = elapsed % loopDur; // posisi dalam loop, relatif ke loopStart (= downbeat 0)
+              // Cari beat index — beats sudah relatif ke firstDownbeat/loopStart
               beatIdx = 0;
               for (let bi2 = 0; bi2 < _customMusikBeats.length; bi2++) {
                 if (_customMusikBeats[bi2] <= musikPos + 0.01) beatIdx = bi2;
@@ -1663,10 +1677,12 @@ let _selectedTrack = JJ_TRACKS[0];
 let _musikAudioEl  = null;
 
 // Custom musik upload state
-let _customMusikFile   = null;   // File object
-let _customMusikBuffer = null;   // AudioBuffer (decoded)
-let _customMusikBeats  = [];     // Array of beat timestamps (seconds)
+let _customMusikFile   = null;
+let _customMusikBuffer = null;
+let _customMusikBeats  = [];     // beat timestamps relatif ke firstDownbeat
 let _customMusikBpm    = 0;
+let _customMusikLoopStart = 0;   // detik: mulai playback dari sini (skip intro)
+let _customMusikLoopEnd   = 0;   // detik: loop kembali ke loopStart dari sini
 let _useCustomMusik    = false;
 
 // ── Synthetic Beat Generator — 5 karakter musik berbeda ───────────
@@ -2116,55 +2132,112 @@ async function loadTrackBuffer(audioCtx, track, durationSec) {
 
 // ─── Beat Detection Engine ────────────────────────────────────────
 function detectBeats(audioBuffer) {
-  // Gunakan channel pertama, downsample ke ~22kHz untuk kecepatan
-  const sr = audioBuffer.sampleRate;
+  const sr  = audioBuffer.sampleRate;
   const raw = audioBuffer.getChannelData(0);
 
-  // 1. Hitung energy per frame (frame = ~10ms)
-  const frameSize = Math.round(sr * 0.010); // 10ms
-  const hopSize   = Math.round(sr * 0.005); // 5ms hop
-  const energies = [];
+  // 1. RMS energy per 10ms frame (lebih stabil dari raw energy)
+  const frameSize = Math.round(sr * 0.010);
+  const hopSize   = Math.round(sr * 0.005);
+  const energies  = [];
   for (let i = 0; i + frameSize < raw.length; i += hopSize) {
     let e = 0;
     for (let j = 0; j < frameSize; j++) e += raw[i+j] * raw[i+j];
-    energies.push(e / frameSize);
+    energies.push(Math.sqrt(e / frameSize));
   }
 
-  // 2. Spectral flux — hitung kenaikan energi mendadak (onset detection)
+  // 2. Half-wave rectified spectral flux
   const flux = [0];
   for (let i = 1; i < energies.length; i++) {
-    const diff = energies[i] - energies[i-1];
-    flux.push(diff > 0 ? diff : 0);
+    const d = energies[i] - energies[i-1];
+    flux.push(d > 0 ? d : 0);
   }
 
-  // 3. Adaptive threshold — rata-rata lokal × 1.5
-  const winSize = Math.round(0.2 / 0.005); // 200ms window
-  const beats = [];
+  // 3. Peak picking dengan adaptive threshold
+  const winSize = Math.round(0.35 / 0.005); // 350ms window
+  const beats   = [];
   for (let i = winSize; i < flux.length - winSize; i++) {
     let localMean = 0;
     for (let j = i - winSize; j <= i + winSize; j++) localMean += flux[j];
     localMean /= (winSize * 2 + 1);
-    if (flux[i] > localMean * 1.5 && flux[i] === Math.max(...flux.slice(i-3, i+4))) {
-      const timeSec = (i * hopSize) / sr;
-      // Min jarak antar beat = 200ms (max 300 BPM)
-      if (beats.length === 0 || timeSec - beats[beats.length-1] > 0.20) {
-        beats.push(timeSec);
+    // Harus lebih besar dari mean × threshold DAN lokal maxima
+    const threshold = localMean * 1.6;
+    if (flux[i] > threshold) {
+      let isMax = true;
+      for (let j = i - 4; j <= i + 4; j++) {
+        if (j !== i && flux[j] >= flux[i]) { isMax = false; break; }
+      }
+      if (isMax) {
+        const timeSec = (i * hopSize) / sr;
+        if (beats.length === 0 || timeSec - beats[beats.length-1] > 0.22) {
+          beats.push(timeSec);
+        }
       }
     }
   }
 
-  // 4. Estimasi BPM dari median interval antar beat
+  // 4. Estimasi BPM dari histogram interval
   const intervals = [];
   for (let i = 1; i < beats.length; i++) intervals.push(beats[i] - beats[i-1]);
-  intervals.sort((a,b) => a-b);
-  const medianInterval = intervals[Math.floor(intervals.length / 2)] || 0.5;
-  const rawBpm = Math.round(60 / medianInterval);
-  // Normalkan ke range 60-200 BPM
-  let bpm = rawBpm;
+  // Grouping interval ke bucket 10ms untuk histogram
+  const hist = {};
+  intervals.forEach(iv => {
+    const key = Math.round(iv * 20) / 20; // round ke 50ms
+    hist[key] = (hist[key] || 0) + 1;
+  });
+  const bestInterval = Object.entries(hist).sort((a,b) => b[1]-a[1])[0];
+  const medianInterval = bestInterval ? parseFloat(bestInterval[0]) : (intervals.sort((a,b)=>a-b)[Math.floor(intervals.length/2)] || 0.5);
+  let bpm = Math.round(60 / medianInterval);
   while (bpm > 200) bpm = Math.round(bpm / 2);
   while (bpm < 60)  bpm = Math.round(bpm * 2);
+  const beatDuration = 60 / bpm;
 
-  return { beats, bpm };
+  // 5. Cari DOWNBEAT PERTAMA yang kuat (beat 1 bar pertama)
+  // Downbeat = beat dengan energi tertinggi di window 2 detik pertama yang ada beat
+  let firstDownbeat = beats[0] || 0;
+  if (beats.length > 1) {
+    // Hitung energi rata-rata per beat
+    const beatEnergies = beats.map(t => {
+      const fi = Math.round((t / hopSize));
+      let sum = 0, count = 0;
+      for (let j = fi; j < fi + Math.round(0.05 / 0.005) && j < energies.length; j++) {
+        sum += energies[j]; count++;
+      }
+      return count ? sum / count : 0;
+    });
+    // Cari beat terkuat di 8 beat pertama sebagai kandidat downbeat
+    const candidate = beats.slice(0, Math.min(8, beats.length));
+    const strongest = candidate.reduce((best, t, i) => beatEnergies[i] > beatEnergies[best] ? i : best, 0);
+    firstDownbeat = candidate[strongest];
+    // Snap ke bar boundary terdekat (mundurkan ke beat 1 bar)
+    // Coba temukan downbeat yang jatuh tepat di bar boundary (mod 4 beat)
+    const barLen = beatDuration * 4;
+    // Cari beat yang paling banyak align ke bar grid
+    let bestScore = -1, bestDB = firstDownbeat;
+    for (let startI = 0; startI < Math.min(4, beats.length); startI++) {
+      let score = 0;
+      const gridStart = beats[startI];
+      beats.forEach(bt => {
+        const phase = ((bt - gridStart) % barLen + barLen) % barLen;
+        if (phase < beatDuration * 0.25 || phase > barLen - beatDuration * 0.25) score++;
+      });
+      if (score > bestScore) { bestScore = score; bestDB = beats[startI]; }
+    }
+    firstDownbeat = bestDB;
+  }
+
+  // 6. Hitung loop boundary — cari titik di beat boundary yang jatuh rapi
+  // Loop end = downbeat terakhir sebelum akhir buffer, kelipatan 8 bar dari firstDownbeat
+  const barLen   = beatDuration * 4;
+  const phrasLen = beatDuration * 32; // 8 bar = 1 phrase
+  const bufDur   = audioBuffer.duration;
+  let loopEnd = firstDownbeat;
+  while (loopEnd + phrasLen <= bufDur - beatDuration) loopEnd += phrasLen;
+  if (loopEnd <= firstDownbeat) loopEnd = firstDownbeat + Math.floor((bufDur - firstDownbeat) / barLen) * barLen;
+
+  // Re-index beats relatif ke firstDownbeat untuk sync efek
+  const beatsFromStart = beats.filter(t => t >= firstDownbeat).map(t => t - firstDownbeat);
+
+  return { beats: beatsFromStart, bpm, firstDownbeat, loopStart: firstDownbeat, loopEnd, beatDuration, barLen };
 }
 
 function drawWaveform(audioBuffer) {
@@ -2213,12 +2286,31 @@ function drawWaveform(audioBuffer) {
   ctx.stroke();
 
   // Gambar beat markers (kuning)
-  ctx.strokeStyle = 'rgba(251,191,36,0.7)'; ctx.lineWidth = 1;
+  ctx.lineWidth = 1;
   const dur = audioBuffer.duration;
   _customMusikBeats.forEach(t => {
-    const x = (t / dur) * W;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    // beats relatif ke loopStart, jadi offset balik ke absolute
+    const absT = t + _customMusikLoopStart;
+    const x = (absT / dur) * W;
+    ctx.strokeStyle = 'rgba(251,191,36,0.6)';
+    ctx.beginPath(); ctx.moveTo(x, 4); ctx.lineTo(x, H-4); ctx.stroke();
   });
+  // Marker loopStart (hijau = mulai playback di sini)
+  if (_customMusikLoopStart > 0) {
+    const xS = (_customMusikLoopStart / dur) * W;
+    ctx.strokeStyle = '#86efac'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(xS, 0); ctx.lineTo(xS, H); ctx.stroke();
+    ctx.fillStyle = '#86efac'; ctx.font = '8px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('▶', xS + 2, 10);
+  }
+  // Marker loopEnd (merah = loop kembali ke loopStart)
+  if (_customMusikLoopEnd > _customMusikLoopStart) {
+    const xE = (_customMusikLoopEnd / dur) * W;
+    ctx.strokeStyle = '#f87171'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(xE, 0); ctx.lineTo(xE, H); ctx.stroke();
+    ctx.fillStyle = '#f87171'; ctx.font = '8px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText('↺', xE - 2, 10);
+  }
 }
 
 async function handleMusikFile(file) {
@@ -2249,11 +2341,15 @@ async function handleMusikFile(file) {
 
     // Deteksi beat
     const result = detectBeats(_customMusikBuffer);
-    _customMusikBeats = result.beats;
-    _customMusikBpm   = result.bpm;
+    _customMusikBeats     = result.beats;
+    _customMusikBpm       = result.bpm;
+    _customMusikLoopStart = result.loopStart;
+    _customMusikLoopEnd   = result.loopEnd;
 
     // Update UI
-    document.getElementById('beatDetectStatus').textContent = '✓ Beat terdeteksi!';
+    const loopDur = (result.loopEnd - result.loopStart).toFixed(1);
+    document.getElementById('beatDetectStatus').textContent =
+      `✓ Downbeat pertama: ${result.loopStart.toFixed(2)}s · Loop: ${loopDur}s`;
     document.getElementById('bpmValue').textContent   = _customMusikBpm;
     document.getElementById('beatCount').textContent  = _customMusikBeats.length;
     document.getElementById('bpmResult').style.display = 'block';

@@ -77,19 +77,23 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
         <div style="font-size:11px;color:rgba(240,237,232,0.45);line-height:1.4">Potongan natural, narasi mengalir, durasi 30-60 detik</div>
       </button>
 
-      <button id="gaya-jj" onclick="setGaya('jj')" style="padding:14px 12px;border-radius:12px;border:1.5px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:rgba(240,237,232,0.5);text-align:left;cursor:pointer">
+      <button id="gaya-jj" onclick="setGaya('jj')" style="padding:14px 12px;border-radius:12px;border:1.5px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:rgba(240,237,232,0.5);text-align:left;cursor:pointer;position:relative;overflow:hidden">
+        <div style="position:absolute;top:0;right:0;font-size:8px;background:linear-gradient(90deg,#ff0080,#ffe600);color:#000;padding:3px 8px;border-radius:0 12px 0 8px;font-weight:800;letter-spacing:0.5px">VIRAL 🔥</div>
         <div style="font-size:22px;margin-bottom:6px">🎵</div>
         <div style="font-size:13px;font-weight:700;color:rgba(240,237,232,0.5);margin-bottom:3px">Jedag Jedug</div>
-        <div style="font-size:11px;color:rgba(240,237,232,0.3);line-height:1.4">Musik viral replace audio, cut sync beat</div>
+        <div style="font-size:11px;color:rgba(240,237,232,0.3);line-height:1.4">Beat sync + flash + zoom · Musik ganti otomatis · Style @jedagjedugsound</div>
       </button>
 
     </div>
 
     <!-- MUSIK SELECTOR — muncul kalau JJ aktif -->
     <div id="musikWrap" style="display:none;margin-top:14px">
-      <div style="font-size:11px;letter-spacing:1px;color:rgba(240,237,232,0.3);text-transform:uppercase;margin-bottom:8px">🎧 Pilih Musik</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:11px;letter-spacing:1px;color:rgba(240,237,232,0.3);text-transform:uppercase">🎧 Pilih Sound</div>
+        <a href="https://youtube.com/@jedagjedugsound" target="_blank" style="font-size:10px;color:#fbbf24;opacity:0.7;text-decoration:none">@jedagjedugsound ↗</a>
+      </div>
       <div style="display:flex;flex-direction:column;gap:6px" id="musikList"></div>
-      <div style="margin-top:8px;font-size:10px;color:rgba(240,237,232,0.2)">Audio asli video akan diganti musik. Semua lagu bebas copyright (royalty-free).</div>
+      <div style="margin-top:8px;font-size:10px;color:rgba(240,237,232,0.2)">🎵 Audio asli video diganti musik JJ. Beat sync otomatis — flash + zoom ikut irama. Semua royalty-free.</div>
     </div>
 
   </div>
@@ -739,6 +743,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
       const JJ_PALETTES = {
         jd:         ['#ffe600','#ff0080','#00f5ff','#ffffff','#ff6600','#00ff88'],
+        slowbass:   ['#00c8ff','#ffffff','#0066ff','#00f5ff','#aaddff','#ffffff'],
+        indobounce: ['#ff2878','#ffe600','#ff0080','#ffffff','#ff6600','#00ff88'],
         koplo:      ['#ff9800','#ffeb3b','#ff5722','#ffffff','#ff9800','#e91e63'],
         breakbeat:  ['#00dcff','#ffffff','#7c3aed','#00ff88','#00dcff','#ff0080'],
         bassbrutal: ['#c800ff','#ff0040','#ffffff','#00f5ff','#c800ff','#ffe600'],
@@ -968,8 +974,30 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               ctx.globalAlpha=1;
             }
 
-            // SCANLINE SWEEP (downbeat to downbeat)
-            const scanAlpha = 0.06;
+            // SPEED LINES — signature efek jedag jedug untuk style energi tinggi
+            if ((JJ_STYLE==='indobounce'||JJ_STYLE==='breakbeat'||JJ_STYLE==='bassbrutal') && jjFlashAlpha > 0.4) {
+              const numLines = 18;
+              const cx2=OUT_W/2, cy2=OUT_H/2;
+              ctx.globalAlpha = jjFlashAlpha * 0.35;
+              for(let li=0;li<numLines;li++){
+                const angle = (li/numLines)*Math.PI*2 + elapsed*0.8;
+                const r1=OUT_W*0.05, r2=OUT_W*1.2;
+                const col2=jjPalette[(jjLastBeat+li)%jjPalette.length];
+                ctx.strokeStyle=col2; ctx.lineWidth=2+Math.random()*3;
+                ctx.beginPath();
+                ctx.moveTo(cx2+Math.cos(angle)*r1, cy2+Math.sin(angle)*r1);
+                ctx.lineTo(cx2+Math.cos(angle)*r2, cy2+Math.sin(angle)*r2);
+                ctx.stroke();
+              }
+              ctx.globalAlpha=1;
+            }
+
+            // VIGNETTE — frame hitam di sudut (semua JJ style)
+            const vg = ctx.createRadialGradient(OUT_W/2,OUT_H/2,OUT_H*0.3,OUT_W/2,OUT_H/2,OUT_H*0.85);
+            vg.addColorStop(0,'transparent');
+            vg.addColorStop(1,`rgba(0,0,0,${0.45+jjFlashAlpha*0.2})`);
+            ctx.globalAlpha=1; ctx.fillStyle=vg;
+            ctx.fillRect(0,0,OUT_W,OUT_H);
             ctx.globalAlpha = scanAlpha;
             for (let sy2=jjScanlineY%4; sy2<OUT_H; sy2+=4) {
               ctx.fillStyle = sy2%8===0 ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.02)';
@@ -1332,20 +1360,23 @@ Klip: ${JSON.stringify(analysis.clips.map(c=>({id:c.id,title:c.title,hook:c.hook
 // ─── Render Clips ─────────────────────────────────────────────────
 function renderClips(clips) {
   const bgs=['#100820','#0d1520','#0d180a','#1a0d10','#0d1018','#18100a'];
+  const isJJ = _gaya === 'jj';
   document.getElementById('clipsGrid').innerHTML = clips.map((c,i)=>`
     <div onclick="selectClip(${c.id})" id="cc${c.id}" style="background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.08);border-radius:11px;overflow:hidden;cursor:pointer;transition:all 0.2s">
-      <div style="aspect-ratio:9/16;background:${bgs[i%bgs.length]};display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative">
+      <div style="aspect-ratio:9/16;background:${isJJ?'linear-gradient(160deg,#0d0015,#15000a,#000d1a)':bgs[i%bgs.length]};display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative">
         ${c.is_viral?'<div style="position:absolute;top:7px;left:7px;font-size:8px;background:rgba(239,68,68,0.8);color:#fff;padding:2px 5px;border-radius:3px;font-weight:700">VIRAL</div>':''}
+        ${isJJ?`<div style="position:absolute;top:7px;left:${c.is_viral?'50px':'7px'};font-size:8px;background:rgba(255,230,0,0.85);color:#000;padding:2px 5px;border-radius:3px;font-weight:800">JJ 🎵</div>`:''}
         <div style="position:absolute;top:7px;right:7px;font-size:9px;background:rgba(124,58,237,0.7);color:#e9d5ff;padding:2px 6px;border-radius:4px;font-weight:600">${c.viral_score}%</div>
         <div style="font-size:24px;margin-bottom:5px">${c.emoji}</div>
         <div style="font-size:9px;color:rgba(255,255,255,0.35)">${c.start}–${c.end}</div>
+        ${isJJ?`<div style="font-size:8px;color:rgba(255,230,0,0.6);margin-top:2px">⚡ ${_selectedTrack?_selectedTrack.bpm:140} BPM</div>`:''}
         <div style="position:absolute;bottom:7px;right:7px;font-size:9px;background:rgba(0,0,0,0.6);color:rgba(255,255,255,0.7);padding:2px 5px;border-radius:3px">${c.duration}</div>
       </div>
       <div style="padding:9px 10px">
         <div style="font-size:11px;font-weight:500;color:rgba(240,237,232,0.85);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px">${c.title}</div>
         <div style="display:flex;gap:5px">
           <button onclick="event.stopPropagation();copyT('${c.hook.replace(/'/g,"\\'")}','Hook disalin!')" style="flex:1;font-size:10px;padding:5px;border-radius:6px;border:0.5px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:rgba(240,237,232,0.55)">Salin Hook</button>
-          <button onclick="event.stopPropagation();downloadClip(${c.id})" id="dlbtn-${c.id}" style="flex:1;font-size:10px;padding:5px;border-radius:6px;border:0.5px solid rgba(167,139,250,0.3);background:rgba(124,58,237,0.18);color:#c4b5fd">⬇ Video</button>
+          <button onclick="event.stopPropagation();downloadClip(${c.id})" id="dlbtn-${c.id}" style="flex:1;font-size:10px;padding:5px;border-radius:6px;border:0.5px solid ${isJJ?'rgba(255,230,0,0.4)':'rgba(167,139,250,0.3)'};background:${isJJ?'rgba(255,200,0,0.12)':'rgba(124,58,237,0.18)'};color:${isJJ?'#fbbf24':'#c4b5fd'}">⬇ ${isJJ?'JJ':'Video'}</button>
         </div>
       </div>
     </div>`).join('');
@@ -1503,43 +1534,53 @@ function loadProject(i) {
 
 const JJ_TRACKS = [
   {
-    id:'jedagjedug', name:'Jedag Jedug Original', genre:'Jungle Dutch 🔥', bpm:140,
-    desc:'Brass stab + double kick — style viral Indonesia asli',
+    id:'jedagjedug', name:'JJ Original — Indo Bounce', genre:'Jungle Dutch 🔥', bpm:140,
+    desc:'Brass stab "dut-dut" + double kick — sound khas @jedagjedugsound',
     url: null, style:'jd'
   },
   {
-    id:'koplo', name:'Dangdut Koplo', genre:'Koplo 🥁', bpm:132,
-    desc:'Kendang koplo + bass kendhang — goyang nonstop',
+    id:'slowbass', name:'Slow Bass Mengkane', genre:'Slow Bass 🌊', bpm:115,
+    desc:'Bass dalam + slow reverb — style mengkane viral 2024',
+    url: null, style:'slowbass'
+  },
+  {
+    id:'indobounce', name:'Indo Bounce Full Bass', genre:'Indo Bounce 💥', bpm:148,
+    desc:'Bass bounce intens + brass triple stab — goyang full lantai',
+    url: null, style:'indobounce'
+  },
+  {
+    id:'koplo', name:'Dangdut Koplo Viral', genre:'Koplo 🥁', bpm:132,
+    desc:'Kendang koplo + bass kendhang — nonstop goyang',
     url: null, style:'koplo'
   },
   {
     id:'breakbeat', name:'Breakbeat Hardstyle', genre:'Breakbeat ⚡', bpm:155,
-    desc:'Break pattern sincopasi + kick distorsi keras',
+    desc:'Break sincopasi + kick distorsi — keras abis',
     url: null, style:'breakbeat'
   },
   {
     id:'bassbrutal', name:'Bass Brutal 808', genre:'Bass Brutal 💥', bpm:142,
-    desc:'Sub bass muter + reese bass — lantai goyang',
+    desc:'Sub bass muter + reese bass — lantai goyang parah',
     url: null, style:'bassbrutal'
   },
   {
-    id:'phonk', name:'Phonk Dark', genre:'Phonk 🏎️', bpm:138,
-    desc:'808 bass berat, hi-hat triplet, distorsi gelap',
+    id:'phonk', name:'Phonk Dark Drift', genre:'Phonk 🏎️', bpm:138,
+    desc:'808 berat, hi-hat triplet — distorsi gelap ala drift',
     url: null, style:'phonk'
   },
   {
-    id:'hype', name:'Hype EDM', genre:'EDM ⚡', bpm:150,
-    desc:'Build-up + drop keras, synth lead, cocok montage',
+    id:'hype', name:'Hype EDM Drop', genre:'EDM ⚡', bpm:150,
+    desc:'Build-up + drop keras — cocok montage/highlight',
     url: null, style:'hype'
   },
   {
-    id:'trap', name:'Trap Banger', genre:'Trap 🎤', bpm:145,
-    desc:'808 slide, hi-hat roll 32nd, bass sub dalam',
+    id:'trap', name:'Trap Banger 808', genre:'Trap 🎤', bpm:145,
+    desc:'808 slide, hi-hat roll 32nd — bass sub dalam',
     url: null, style:'trap'
   },
   {
-    id:'cinematic', name:'Epic Cinematic', genre:'Cinematic 🎬', bpm:120,
-    desc:'Orkestra + beat, cocok momen dramatis & inspiratif',
+    id:'cinematic', name:'Epic Cinematic Hits', genre:'Cinematic 🎬', bpm:120,
+    desc:'Orkestra + beat — momen dramatis & inspiratif',
     url: null, style:'cinematic'
   },
 ];
@@ -1896,9 +1937,90 @@ function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
       // Synth pluck accent
       if (bi===0) synthLead(t+beatSec*0.25, highNotes[b%8]*2, 0.05, 'square');
     }
-  }
 
-  // Hard limiter
+  } else if (style === 'slowbass') {
+    // SLOW BASS MENGKANE — deep reverb bass, slow groove, signature sound viral 2024
+    const bassNotes = [41.2,41.2,36.7,43.7,41.2,38.9,43.7,46.2];
+    const padNotes  = [82.4,92.5,87.3,98,82.4,77.8,87.3,98];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%4;
+      // Kick pelan, dalam — slow & heavy
+      kick(t, 80, 10, 35);
+      if (bi===2) kick(t+beatSec*0.25, 75, 12, 32);
+      // Snare reverberant
+      if (bi===1||bi===3) snare(t, 8, 0.6);
+      // Hi-hat sangat sparse — 8th note only
+      hihat(t, false, 0.18);
+      hihat(t+beatSec*0.5, bar4>=2, 0.14);
+      // Deep sub bass — panjang, sustain lama (mengkane signature)
+      bass808(t, bassNotes[b%8], beatSec*1.8, b%4===0); // sangat panjang
+      if (bi===0||bi===2) bass808(t+beatSec*0.5, bassNotes[(b+4)%8]*0.5, beatSec*1.2, true);
+      // Pad chord lembut di atas bass
+      if (bi===0) {
+        synthLead(t, padNotes[b%8], beatSec*3, 'sine');
+        synthLead(t, padNotes[b%8]*1.5, beatSec*3, 'sine');
+      }
+      // Brass stab sparse (sekali tiap 2 bar)
+      if (bi===0&&bar4%2===0) brass(t+beatSec*0.75, padNotes[b%8]*2, 0.12);
+    }
+
+  } else if (style === 'indobounce') {
+    // INDO BOUNCE FULL BASS — lebih brutal dari JD, triple brass stab, bass pantul cepat
+    const bassSeq   = [55,55,73.4,82.4,65.4,55,73.4,61.7,  55,82.4,73.4,65.4,77.8,55,61.7,82.4];
+    const brassSeq  = [261.6,293.7,277.2,329.6,261.6,220,246.9,293.7];
+    const bounceSeq = [110,110,146.8,164.8,130.8,110,146.8,123.5];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4;
+      const bar4 = Math.floor(b/4)%4, bar8 = Math.floor(b/4)%8;
+      const isDrop = bar8 < 6;
+
+      if (bar8===7&&bi===0) riser(t, beatSec*4);
+
+      if (isDrop) {
+        // TRIPLE kick — ciri Indo Bounce brutal
+        kick(t, 190, 24, 58);
+        kick(t+beatSec*0.33, 170, 28, 52);
+        kick(t+beatSec*0.67, 160, 30, 50);
+        // Extra offbeat kicks
+        if (bi===0||bi===2) { kick(t+beatSec*0.17, 155, 32, 48); kick(t+beatSec*0.83, 150, 30, 46); }
+
+        // Snare + double clap (lebih keras dari JD)
+        if (bi===1||bi===3) { snare(t, 20, 0.85); clap(t+0.004); clap(t+0.012); }
+
+        // Hi-hat 32nd note (lebih rapat dari JD)
+        for (let s=0; s<8; s++) hihat(t+s*beatSec/8, s%2===1, s===0?0.32:0.16);
+        if (bar4>=2) for (let s=0; s<16; s++) hihat(t+s*beatSec/16, false, 0.11); // full 32nd
+
+        // TRIPLE BRASS STAB — Indo Bounce signature
+        if (bi===0) {
+          brass(t+beatSec*0.33, brassSeq[b%8], 0.08);
+          brass(t+beatSec*0.5,  brassSeq[b%8]*1.25, 0.06);
+          brass(t+beatSec*0.67, brassSeq[(b+4)%8], 0.07);
+        }
+        if (bi===2) {
+          brass(t, brassSeq[(b+2)%8], 0.07);
+          brass(t+beatSec*0.25, brassSeq[(b+6)%8]*1.5, 0.05);
+          brass(t+beatSec*0.5,  brassSeq[(b+4)%8], 0.06);
+        }
+
+        // Bass bounce CEPAT — pantul di tiap 16th note
+        bass808(t, bassSeq[b%16], beatSec*0.45);
+        bass808(t+beatSec*0.25, bounceSeq[b%8]*0.5, beatSec*0.35, true);
+        bass808(t+beatSec*0.5, bassSeq[(b+8)%16]*0.75, beatSec*0.4);
+        bass808(t+beatSec*0.75, bounceSeq[(b+4)%8]*0.6, beatSec*0.3, true);
+        if (bar4>=2) {
+          bass808(t+beatSec*0.125, bounceSeq[(b+2)%8]*0.4, beatSec*0.22);
+          bass808(t+beatSec*0.375, bassSeq[(b+4)%16]*0.35, beatSec*0.2);
+        }
+      } else {
+        // Break — masih ada bass pantul tapi lebih sparse
+        if (bi===0||bi===2) kick(t, 170, 20, 52);
+        if (bi===1||bi===3) { snare(t, 16, 0.6); clap(t+0.006); }
+        hihat(t, false, 0.22); hihat(t+beatSec*0.5, false, 0.16);
+        bass808(t, bassSeq[b%16]*0.6, beatSec*1.2);
+        bass808(t+beatSec*0.5, bounceSeq[b%8]*0.35, beatSec*0.8, true);
+      }
+    }
   for (let i=0;i<frames;i++){L[i]=Math.tanh(L[i]*0.75)*0.92;R[i]=Math.tanh(R[i]*0.75)*0.92;}
   return buf;
 }
@@ -1913,6 +2035,8 @@ function renderMusikList() {
   if (!wrap) return;
   const styleColors = {
     jd:         { border:'rgba(255,230,0,0.5)',  bg:'rgba(255,230,0,0.07)',   text:'#ffe600' },
+    slowbass:   { border:'rgba(0,200,255,0.5)',  bg:'rgba(0,200,255,0.06)',   text:'#00c8ff' },
+    indobounce: { border:'rgba(255,40,120,0.5)', bg:'rgba(255,40,120,0.07)',  text:'#ff2878' },
     koplo:      { border:'rgba(255,120,0,0.5)',  bg:'rgba(255,120,0,0.07)',   text:'#ff9800' },
     breakbeat:  { border:'rgba(0,220,255,0.5)',  bg:'rgba(0,220,255,0.07)',   text:'#00dcff' },
     bassbrutal: { border:'rgba(200,0,255,0.5)',  bg:'rgba(200,0,255,0.07)',   text:'#c800ff' },
@@ -2013,16 +2137,25 @@ function setGaya(g) {
 
 function getGayaPromptExtra() {
   if (_gaya !== 'jj') return '';
+  const trackName = _selectedTrack ? _selectedTrack.name : 'Jedag Jedug Original';
+  const genre = _selectedTrack ? _selectedTrack.genre : 'Jungle Dutch';
+  const bpm = _selectedTrack ? _selectedTrack.bpm : 140;
+  const isSlow = _selectedTrack && _selectedTrack.style === 'slowbass';
   return `
-GAYA EDIT: JEDAG JEDUG (Beat Sync + Musik Viral)
-- Pilih segmen video dengan ENERGI TINGGI, gerakan cepat, momen dramatis, ekspresi kuat
-- Audio asli AKAN diganti musik: ${_selectedTrack.name} (${_selectedTrack.genre}, ${_selectedTrack.bpm} BPM)
-- Durasi tiap klip: 15-25 detik (pendek, padat, langsung ke inti)
-- Hook: SINGKAT & KERAS, maks 6 kata, all caps boleh, pakai tanda seru
-- Prioritaskan momen: gerakan eksplosif, ekspresi dramatis, transisi visual menarik
-- Tags WAJIB include: 'jedagjedug', 'beatsync', 'fyp'
-- reason harus menyebut energi/beat/ritme klip
-- Hindari segmen narasi panjang atau penjelasan lambat
+GAYA EDIT: JEDAG JEDUG VIRAL — style @jedagjedugsound
+Sound dipilih: ${trackName} (${genre}, ${bpm} BPM)
+${isSlow
+  ? `- SLOW BASS MODE: pilih momen dengan emosi kuat, close-up, ekspresi wajah, atau momen haru/dramatis
+- Durasi klip: 20-35 detik — lebih panjang untuk build emosi
+- Hook: emosional, menyentuh hati, atau plot twist — bukan energi tinggi`
+  : `- Pilih segmen dengan ENERGI TINGGI, gerakan cepat, ekspresi kuat, momen dramatis
+- Durasi tiap klip: 15-25 detik — pendek, padat, langsung ke inti
+- Hook: SINGKAT & KERAS, maks 6 kata, pakai kata hype: "VIRAL!", "GILA!", "LIAT INI!"`}
+- Audio asli DIGANTI musik: sync otomatis ke beat ${bpm} BPM
+- Prioritaskan: gerakan eksplosif, ekspresi dramatis, transisi visual menarik, momen "jedug"
+- Tags WAJIB: 'jedagjedug', 'beatsync', 'fyp', 'jedagjedugsound'
+- Hindari segmen narasi lambat atau penjelasan panjang tanpa visual menarik
+- reason WAJIB sebut ritme/beat/visual klip mengapa cocok jadi JJ content
 `;
 }
 

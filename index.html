@@ -967,8 +967,11 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
           const wallElapsed = (now - recordingStartTime) / 1000;
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
-          // Prefer videoElapsed if video is running, fallback to wall clock (avoids freeze at start)
-          const elapsed  = Math.min(Math.max(0, videoElapsed > 0.05 ? videoElapsed : wallElapsed), requestedDur);
+          // Normal mode: pakai wall clock murni supaya tidak freeze saat video stall di awal
+          // JJ mode: tetap prefer videoElapsed jika video sudah berjalan
+          const elapsed  = IS_JJ
+            ? Math.min(Math.max(0, videoElapsed > 0.05 ? videoElapsed : wallElapsed), requestedDur)
+            : Math.min(wallElapsed, requestedDur);
           const progress = Math.min(1, elapsed / requestedDur);
 
           // ── JJ BEAT SYNC — per quarter/half/beat/bar ─────────────
@@ -1339,11 +1342,15 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         let stopTimer = null;
         let totalStallMs = 0;
         let stallStart = null;
-        const BASE_EXTRA = IS_JJ ? 1800 : 1000;
+        const BASE_EXTRA = IS_JJ ? 2000 : 2500; // Normal mode lebih toleran
+        let recActualStartWall = null; // waktu wall-clock saat rec.start() dipanggil
 
         const scheduleStop = (extraMs = 0) => {
           if (stopTimer) clearTimeout(stopTimer);
-          const remaining = Math.max(0, (safeEnd - video.currentTime) * 1000);
+          // Pakai requestedDur sebagai acuan utama — lebih reliable dari video.currentTime
+          // yang bisa belum update saat baru seek/play
+          const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
+          const remaining = Math.max(0, (requestedDur - elapsed) * 1000);
           const delay = remaining + BASE_EXTRA + extraMs + totalStallMs;
           stopTimer = setTimeout(() => {
             try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
@@ -1365,13 +1372,17 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           }
         });
         // Jika video ended sebelum stop timer — langsung stop recorder
+        // Guard: jangan stop terlalu awal kalau klip belum sampai safeEnd
         video.addEventListener('ended', () => {
+          const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
+          if (elapsed < requestedDur - 1.5) return; // terlalu awal, biarkan timer normal
           if (stopTimer) clearTimeout(stopTimer);
-          setTimeout(() => { try { rec.stop(); } catch(e){} }, 400);
+          setTimeout(() => { try { rec.stop(); } catch(e){} }, 500);
         }, { once: true });
 
         // JJ mode: video sudah play dari luar, tapi seek ke safeStart dulu
         const doStartRec = () => {
+          recActualStartWall = performance.now();
           rec.start(100);
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();

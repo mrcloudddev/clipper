@@ -121,7 +121,7 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
             <!-- Mini waveform canvas -->
             <canvas id="waveformCanvas" style="width:100%;height:36px;border-radius:5px;margin-top:8px;display:none"></canvas>
             <!-- BPM result -->
-            <div id="bpmResult" style="display:none;margin-top:8px;display:none">
+            <div id="bpmResult" style="display:none;margin-top:8px">
               <div style="display:flex;align-items:center;gap:8px">
                 <div style="flex:1;background:rgba(255,200,0,0.1);border-radius:6px;padding:7px 10px;text-align:center">
                   <div style="font-size:9px;color:rgba(240,237,232,0.35);text-transform:uppercase;letter-spacing:0.8px">BPM Terdeteksi</div>
@@ -790,7 +790,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
       reject(new Error(msgs[code] || 'Gagal membaca video (kode '+code+')'));
     };
 
-    const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout — video terlalu besar atau format tidak didukung')); }, 45000);
+    const IS_JJ      = (typeof _gaya !== 'undefined') && _gaya === 'jj';
+    const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout — video terlalu besar atau format tidak didukung')); }, IS_JJ ? 90000 : 60000);
 
       video.addEventListener('loadedmetadata', () => {
         clearTimeout(hardTimeout);
@@ -828,7 +829,6 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         });
       }, { once: true });
 
-      const IS_JJ      = (typeof _gaya !== 'undefined') && _gaya === 'jj';
       const IS_JJ_AUDIO= IS_JJ;
       // BPM: pakai custom jika ada, fallback ke track synthetic
       // JJ ref video beats take priority, then custom musik, then synthetic track
@@ -886,37 +886,49 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               // Set loop boundaries ke beat/bar boundary yang bersih
               if (loopStart > 0 || loopEnd > loopStart) {
                 src.loop      = true;
-                src.loopStart = loopStart;  // mulai dari downbeat pertama, bukan dari detik 0
-                src.loopEnd   = loopEnd > loopStart + 1 ? loopEnd : buf.duration; // loop kembali ke loopStart
+                src.loopStart = loopStart;
+                src.loopEnd   = loopEnd > loopStart + 1 ? loopEnd : buf.duration;
               } else {
-                src.loop = true; // fallback: loop normal
+                src.loop = true;
               }
 
               const gain = audioCtx.createGain(); gain.gain.value = 0.9;
               src.connect(gain); gain.connect(dest); gain.connect(audioCtx.destination);
-              // start(when=0, offset=loopStart) — mulai playback dari downbeat pertama
-              src.start(0, loopStart);
+              src.start(0, loopStart > 0 ? loopStart : 0);
             };
 
+            // FIXED: tunggu buffer siap SEBELUM buat combinedStream & mulai recording
+            let musikReady;
             if (_useJJRef && _jjRefAudioBuffer) {
-              // JJ Ref mode — pakai audio dari video contoh JJ (sync ke beat yang sudah dianalisis)
               playMusik(_jjRefAudioBuffer, _jjRefLoopStart, _jjRefLoopEnd);
+              musikReady = Promise.resolve();
             } else if (_useCustomMusik && _customMusikBuffer) {
               playMusik(_customMusikBuffer, _customMusikLoopStart, _customMusikLoopEnd);
+              musikReady = Promise.resolve();
             } else {
-              loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2)
+              musikReady = loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 4)
                 .then(buf => playMusik(buf, 0, buf.duration))
-                .catch(e => console.warn('loadTrackBuffer:', e));
+                .catch(e => { console.warn('loadTrackBuffer:', e); });
             }
-            combinedStream = new MediaStream([canvasStream.getVideoTracks()[0], ...dest.stream.getAudioTracks()]);
+
+            // Tunggu musik siap lalu baru mulai recording
+            musikReady.then(() => {
+              // Beri sedikit waktu untuk audio node connect ke dest stream
+              setTimeout(() => {
+                const audioTracks = dest.stream.getAudioTracks();
+                combinedStream = audioTracks.length > 0
+                  ? new MediaStream([canvasStream.getVideoTracks()[0], audioTracks[0]])
+                  : canvasStream;
+                beginJJRecording(combinedStream);
+              }, 80);
+            });
+            return; // Keluar dari try block — recording dilanjut di beginJJRecording
 
           } else {
             // Normal mode — use original video audio
-            // IMPORTANT: must unmute BEFORE createMediaElementSource
             video.muted = false;
             const dest = audioCtx.createMediaStreamDestination();
             const srcNode = audioCtx.createMediaElementSource(video);
-            // Resume context first to avoid initial audio silence/delay
             if (audioCtx.state === 'suspended') audioCtx.resume();
             srcNode.connect(dest);
             srcNode.connect(audioCtx.destination);
@@ -931,10 +943,18 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           combinedStream = canvasStream;
         }
 
+        // JJ mode handled via musikReady.then() -> beginJJRecording above
+        if (IS_JJ_AUDIO && ((typeof _selectedTrack !== 'undefined' && _selectedTrack) || _useJJRef || _useCustomMusik)) {
+          return; // recording akan dimulai dari beginJJRecording di atas
+        }
+        beginJJRecording(combinedStream);
+
+        // ── Shared recording start function ──────────────────────────
+        function beginJJRecording(stream) {
         // ── MediaRecorder ────────────────────────────────────────────
         let rec;
-        try { rec = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 }); }
-        catch(e) { try { rec = new MediaRecorder(combinedStream, { mimeType }); } catch(e2) { rec = new MediaRecorder(combinedStream); } }
+        try { rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 }); }
+        catch(e) { try { rec = new MediaRecorder(stream, { mimeType }); } catch(e2) { rec = new MediaRecorder(stream); } }
 
         const chunks = [];
         rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -1294,21 +1314,21 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         };
 
         // Draw first frame then start — wait for play() before starting recorder
-        // to prevent blank/frozen frames at the beginning (Normal mode delay bug)
         try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
         video.playbackRate = 1;
-        video.play().then(() => {
-          // Video is actually playing now — start recorder in sync
+        // JJ mode: video sudah play dari luar, tapi seek ke safeStart dulu
+        const doStartRec = () => {
           rec.start(100);
           rafHandle = requestAnimationFrame(drawFrame);
-          setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, requestedDur*1000+600);
-        }).catch(e => {
+          // JJ mode butuh sedikit lebih lama karena efek canvas lebih berat
+          const stopDelay = IS_JJ ? requestedDur*1000 + 1200 : requestedDur*1000 + 600;
+          setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, stopDelay);
+        };
+        video.play().then(doStartRec).catch(e => {
           console.warn('play():', e);
-          // Fallback: start anyway
-          rec.start(100);
-          rafHandle = requestAnimationFrame(drawFrame);
-          setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, requestedDur*1000+600);
+          doStartRec(); // Fallback: start anyway
         });
+        } // end beginJJRecording
       }
 
       video.load();

@@ -640,7 +640,6 @@ async function confirmCut() {
     setModalBar(10, 'Membuat subtitle AI...');
     timedSubs = await generateSubtitles(clip, dur);
     setModalBar(45, timedSubs.length > 0 ? `✓ ${timedSubs.length} baris subtitle siap` : 'Menggunakan subtitle fallback...');
-    await wait(300);
   } else {
     setModalBar(10, 'Menyiapkan video...');
   }
@@ -648,7 +647,6 @@ async function confirmCut() {
   try {
     const blob = await cutVideoSegment(_videoFile, startSec, endSec, _subtitleOn, timedSubs, _selectedQuality);
     setModalBar(100,'Selesai!');
-    await wait(300);
     hideModal();
     const ext = blob.type.includes('webm')?'webm':'mp4';
     const a = document.createElement('a');
@@ -863,11 +861,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         trap:       ['#ff6600','#ffffff','#ff3300','#ffaa00','#00f5ff','#ff6600'],
         cinematic:  ['#ffd700','#ffffff','#c0c0c0','#ffe066','#aaddff','#c0c0c0'],
       };
-      // Override palette dari visual profile contoh JJ (jika mode clone aktif)
-      const _refVisual = (_useJJRef && _jjRefStyle && _jjRefStyle.visual) ? _jjRefStyle.visual : null;
-      const jjPalette = (_refVisual && _refVisual.palette)
-        ? _refVisual.palette
-        : (JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd);
+      const jjPalette = JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd;
 
       function startRecording(video, safeStart, safeEnd, requestedDur, sx, sy, sw, sh) {
         // ── Audio setup ─────────────────────────────────────────────
@@ -1136,92 +1130,6 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           }
           ctx.restore();
 
-          // ── VISUAL COLOR GRADING FROM CLONED PROFILE ─────────────
-          if (IS_JJ && _useJJRef && _jjRefStyle && _jjRefStyle.visual) {
-            const vp = _jjRefStyle.visual;
-
-            // 1. DESATURATION — if contoh JJ was grayscale/desaturated
-            if (vp.isDesaturated) {
-              // Apply grayscale via luminosity blend
-              ctx.save();
-              ctx.globalCompositeOperation = 'color';
-              ctx.globalAlpha = 0.92;
-              ctx.fillStyle = `rgb(${Math.round(vp.lumaAvg)},${Math.round(vp.lumaAvg)},${Math.round(vp.lumaAvg)})`;
-              ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            } else if (vp.saturation < 0.6) {
-              // Partial desaturation
-              ctx.save();
-              ctx.globalCompositeOperation = 'color';
-              ctx.globalAlpha = 0.55;
-              ctx.fillStyle = `rgb(${Math.round(vp.rAvg)},${Math.round(vp.gAvg)},${Math.round(vp.bAvg)})`;
-              ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            }
-
-            // 2. BRIGHTNESS / CONTRAST adjust
-            if (vp.isDark && !vp.isDesaturated) {
-              // Darken the output to match dark video tone
-              ctx.save();
-              ctx.globalCompositeOperation = 'multiply';
-              ctx.globalAlpha = Math.min(0.45, 1 - vp.brightness * 0.7);
-              ctx.fillStyle = '#000000';
-              ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            } else if (vp.isDesaturated && vp.isDark) {
-              // Extra darkening for monochrome dark videos
-              ctx.save();
-              ctx.globalCompositeOperation = 'multiply';
-              ctx.globalAlpha = 0.5;
-              ctx.fillStyle = '#111111';
-              ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            }
-
-            // 3. HEAVY VIGNETTE for dark/mono style
-            if (vp.vignetteStrength > 0.3) {
-              const vgn = ctx.createRadialGradient(OUT_W/2, OUT_H/2, OUT_H*0.28, OUT_W/2, OUT_H/2, OUT_H*0.75);
-              vgn.addColorStop(0, 'transparent');
-              vgn.addColorStop(1, `rgba(0,0,0,${vp.vignetteStrength.toFixed(2)})`);
-              ctx.save(); ctx.globalCompositeOperation = 'source-over';
-              ctx.fillStyle = vgn; ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            }
-
-            // 4. FILM GRAIN for cinematic/mono style
-            if (vp.grainAmount > 0) {
-              ctx.save();
-              ctx.globalAlpha = vp.grainAmount;
-              ctx.globalCompositeOperation = 'overlay';
-              // Draw noise using a small random pattern scaled up
-              const noiseSize = 64;
-              const noiseCanvas = document.createElement('canvas');
-              noiseCanvas.width = noiseSize; noiseCanvas.height = noiseSize;
-              const nCtx = noiseCanvas.getContext('2d');
-              const nData = nCtx.createImageData(noiseSize, noiseSize);
-              for (let ni = 0; ni < nData.data.length; ni += 4) {
-                const v = Math.random() * 255 | 0;
-                nData.data[ni] = v; nData.data[ni+1] = v; nData.data[ni+2] = v; nData.data[ni+3] = 255;
-              }
-              nCtx.putImageData(nData, 0, 0);
-              // Tile the noise
-              const pattern = ctx.createPattern(noiseCanvas, 'repeat');
-              ctx.fillStyle = pattern;
-              ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            }
-
-            // 5. Override flash color to match video palette (not neon for dark videos)
-            if (vp.isDesaturated && jjFlashAlpha > 0.01) {
-              // For monochrome video: white flash only, no color
-              ctx.save();
-              ctx.globalAlpha = jjFlashAlpha * 0.5; // softer flash
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, OUT_W, OUT_H);
-              ctx.restore();
-            }
-          }
-
           // ── POST EFFECTS ─────────────────────────────────────────
           if (IS_JJ) {
 
@@ -1240,9 +1148,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             }
 
             // COLOR FLASH OVERLAY
-            // Skip untuk desaturated clone mode — flash sudah dihandle di blok color grading atas
-            const _skipColorFlash = _useJJRef && _jjRefStyle && _jjRefStyle.visual && _jjRefStyle.visual.isDesaturated;
-            if (jjFlashAlpha > 0.01 && !_skipColorFlash) {
+            if (jjFlashAlpha > 0.01) {
               const flashColor = jjPalette[jjLastBeat % jjPalette.length];
               ctx.globalAlpha = jjFlashAlpha * 0.65;
               ctx.fillStyle = flashColor;
@@ -1551,7 +1457,6 @@ async function runPipeline(info) {
   addLog('> Menginisialisasi AI pipeline...','#a78bfa');
   addLog('> Terhubung ke Claude AI...');
 
-  await wait(500);
   const cats = selCats.size ? [...selCats].join(', ') : 'umum';
   setProgress(18,'Menganalisis video...');
   addLog('> Mengirim data ke AI...');
@@ -1587,12 +1492,10 @@ PENTING: Buat setiap klip unik — beda timestamp, beda emosi, beda angle. Gaya 
   renderSteps(1); setProgress(38,'Memproses transkrip...');
   addLog('> Analisis selesai! Topik: '+analysis.video_topic,'#a78bfa');
   addLog('> Potensi viral: '+analysis.viral_potential+'%');
-  await wait(700);
 
   renderSteps(2); setProgress(60,'Memotong klip...');
   addLog('> Transkrip diproses','#86efac');
   addLog('> Menemukan '+analysis.clips.length+' momen viral...');
-  await wait(600);
 
   renderSteps(3); setProgress(80,'Membuat caption...');
   addLog('> '+analysis.clips.length+' klip berhasil dipotong','#86efac');
@@ -1725,7 +1628,6 @@ async function cutAndDownload(clip) {
   try {
     const blob = await cutVideoSegment(_videoFile, startSec, endSec);
     setModalBar(100, 'Selesai!');
-    await wait(300);
     hideModal();
 
     const ext = blob.type.includes('webm') ? 'webm' : 'mp4';
@@ -1751,7 +1653,7 @@ async function downloadAll() {
   if(!_videoFile){ toast('ℹ Upload file video dulu untuk mengunduh klip!'); return; }
   for(let i=0; i<_clips.length; i++) {
     await cutAndDownload(_clips[i]);
-    await wait(500);
+    await wait(100);
   }
 }
 
@@ -1921,209 +1823,8 @@ function detectJJProfile(bpm, energyScore) {
   return 'cinematic';
 }
 
-// ── Analisis visual dari frame-frame video contoh JJ ─────────────
-// Deteksi: brightness, saturation, hue dominan, color palette, contrast
-async function analyzeJJRefVisual(file) {
-  return new Promise(resolve => {
-    const video = document.createElement('video');
-    video.src = URL.createObjectURL(file);
-    video.muted = true;
-    video.preload = 'auto';
-    video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:1px;height:1px;top:-9999px';
-    document.body.appendChild(video);
-
-    const fallback = () => {
-      try { document.body.removeChild(video); URL.revokeObjectURL(video.src); } catch(e) {}
-      // Default: no color grading override
-      resolve({ brightness: 0.5, saturation: 1.0, contrast: 1.0, hue: 0,
-                isDesaturated: false, isDark: false, dominantColor: null,
-                palette: null, grainAmount: 0, vignetteStrength: 0.3 });
-    };
-
-    const timeout = setTimeout(fallback, 8000);
-
-    video.addEventListener('loadedmetadata', () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 80; canvas.height = 80; // small for speed
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-      const dur = video.duration || 15;
-      const sampleTimes = [0.1, 0.25, 0.5, 0.75, 0.9].map(f => f * Math.min(dur, 15));
-      let sampleIdx = 0;
-
-      const samples = { rSum:0, gSum:0, bSum:0, lumaSum:0, satSum:0, count:0, chromaMax:0 };
-
-      const takeSample = () => {
-        if (sampleIdx >= sampleTimes.length) {
-          clearTimeout(timeout);
-          try { document.body.removeChild(video); URL.revokeObjectURL(video.src); } catch(e) {}
-
-          const n = samples.count || 1;
-          const rAvg = samples.rSum / n;
-          const gAvg = samples.gSum / n;
-          const bAvg = samples.bSum / n;
-          const lumaAvg = samples.lumaSum / n;
-          const satAvg  = samples.satSum  / n;
-
-          // Classify visual profile
-          const isDark        = lumaAvg < 80;
-          const isDesaturated = satAvg  < 0.18;
-          const isBright      = lumaAvg > 160;
-
-          // Dominant hue (rough)
-          const maxC = Math.max(rAvg, gAvg, bAvg);
-          const minC = Math.min(rAvg, gAvg, bAvg);
-          let hue = 0;
-          if (maxC - minC > 10) {
-            if (maxC === rAvg) hue = ((gAvg - bAvg) / (maxC - minC)) * 60;
-            else if (maxC === gAvg) hue = (2 + (bAvg - rAvg) / (maxC - minC)) * 60;
-            else hue = (4 + (rAvg - gAvg) / (maxC - minC)) * 60;
-            if (hue < 0) hue += 360;
-          }
-
-          // Contrast boost: if video is dark, boost contrast in generated output
-          const contrast = isDark ? 1.25 : isBright ? 0.95 : 1.0;
-          // Brightness shift: pull generated video towards target luma
-          const brightnessTarget = lumaAvg / 128; // 1.0 = neutral
-
-          // Color palette untuk JJ effects — derived from video color temperature
-          // Warm video → warm palette, cool/mono → mono/cool palette
-          let palette = null;
-          let grainAmount = 0;
-          let vignetteStrength = 0.3;
-
-          if (isDesaturated) {
-            // Monochrome/desaturated → gunakan palette hitam-putih + satu accent
-            palette = ['#ffffff','#aaaaaa','#ffffff','#dddddd','#ffffff','#aaaaaa'];
-            grainAmount = 0.04; // film grain
-            vignetteStrength = 0.55; // heavy vignette untuk dark cinematic
-          } else if (isDark) {
-            // Dark colored → dark palette, bolder effects
-            palette = [`rgb(${Math.round(rAvg*1.4)},${Math.round(gAvg*0.6)},${Math.round(bAvg*1.4)})`,
-                       '#ffffff', `rgb(${Math.round(rAvg*0.6)},${Math.round(gAvg*1.4)},${Math.round(bAvg*1.4)})`,
-                       '#cccccc', '#ffffff', `rgb(${Math.round(rAvg*1.2)},${Math.round(gAvg*1.2)},${Math.round(bAvg*0.6)})`];
-            vignetteStrength = 0.4;
-          } else {
-            // Normal/bright → standard JJ palette but derived from video color temp
-            palette = null; // use default jjPalette
-          }
-
-          resolve({
-            brightness: brightnessTarget,
-            saturation: isDesaturated ? 0.05 : (satAvg < 0.35 ? 0.5 : 1.0),
-            contrast,
-            hue,
-            isDark,
-            isDesaturated,
-            isBright,
-            rAvg, gAvg, bAvg, lumaAvg, satAvg,
-            dominantColor: `rgb(${Math.round(rAvg)},${Math.round(gAvg)},${Math.round(bAvg)})`,
-            palette,
-            grainAmount,
-            vignetteStrength,
-          });
-          return;
-        }
-
-        video.currentTime = sampleTimes[sampleIdx++];
-      };
-
-      video.addEventListener('seeked', () => {
-        try {
-          ctx.drawImage(video, 0, 0, 80, 80);
-          const imgData = ctx.getImageData(0, 0, 80, 80).data;
-          let r=0,g=0,b=0,luma=0,sat=0,count=0;
-          for (let i=0; i<imgData.length; i+=16) { // sample every 4th pixel
-            const ri=imgData[i], gi=imgData[i+1], bi=imgData[i+2];
-            const l = 0.299*ri + 0.587*gi + 0.114*bi;
-            const maxc=Math.max(ri,gi,bi), minc=Math.min(ri,gi,bi);
-            const s = maxc > 0 ? (maxc-minc)/maxc : 0;
-            r+=ri; g+=gi; b+=bi; luma+=l; sat+=s; count++;
-          }
-          if (count > 0) {
-            samples.rSum += r/count; samples.gSum += g/count; samples.bSum += b/count;
-            samples.lumaSum += luma/count; samples.satSum += sat/count;
-            samples.count++;
-          }
-        } catch(e) {}
-        takeSample();
-      }, { once: false }); // Note: kita pakai { once:false } dan manual remove
-
-      // Override seeked listener to work per-sample
-      const onSeeked = () => {
-        try {
-          ctx.drawImage(video, 0, 0, 80, 80);
-          const imgData = ctx.getImageData(0, 0, 80, 80).data;
-          let r=0,g=0,b=0,luma=0,sat=0,count=0;
-          for (let i=0; i<imgData.length; i+=16) {
-            const ri=imgData[i], gi=imgData[i+1], bi=imgData[i+2];
-            const l = 0.299*ri + 0.587*gi + 0.114*bi;
-            const maxc=Math.max(ri,gi,bi), minc=Math.min(ri,gi,bi);
-            const s = maxc > 0 ? (maxc-minc)/maxc : 0;
-            r+=ri; g+=gi; b+=bi; luma+=l; sat+=s; count++;
-          }
-          if (count > 0) {
-            samples.rSum += r/count; samples.gSum += g/count; samples.bSum += b/count;
-            samples.lumaSum += luma/count; samples.satSum += sat/count;
-            samples.count++;
-          }
-        } catch(e) {}
-
-        sampleIdx++;
-        if (sampleIdx >= sampleTimes.length) {
-          video.removeEventListener('seeked', onSeeked);
-          clearTimeout(timeout);
-          try { document.body.removeChild(video); URL.revokeObjectURL(video.src); } catch(e) {}
-
-          const n = samples.count || 1;
-          const rAvg = samples.rSum / n;
-          const gAvg = samples.gSum / n;
-          const bAvg = samples.bSum / n;
-          const lumaAvg = samples.lumaSum / n;
-          const satAvg  = samples.satSum  / n;
-
-          const isDark        = lumaAvg < 80;
-          const isDesaturated = satAvg  < 0.18;
-          const isBright      = lumaAvg > 160;
-
-          const contrast = isDark ? 1.25 : isBright ? 0.95 : 1.0;
-          const brightnessTarget = lumaAvg / 128;
-
-          let palette = null, grainAmount = 0, vignetteStrength = 0.3;
-          if (isDesaturated) {
-            palette = ['#ffffff','#aaaaaa','#ffffff','#dddddd','#ffffff','#aaaaaa'];
-            grainAmount = 0.035; vignetteStrength = 0.55;
-          } else if (isDark) {
-            vignetteStrength = 0.4;
-          }
-
-          resolve({
-            brightness: brightnessTarget, saturation: isDesaturated ? 0.05 : (satAvg < 0.35 ? 0.5 : 1.0),
-            contrast, hue: 0, isDark, isDesaturated, isBright,
-            rAvg, gAvg, bAvg, lumaAvg, satAvg,
-            dominantColor: `rgb(${Math.round(rAvg)},${Math.round(gAvg)},${Math.round(bAvg)})`,
-            palette, grainAmount, vignetteStrength,
-          });
-        } else {
-          video.currentTime = sampleTimes[sampleIdx];
-        }
-      };
-
-      video.addEventListener('seeked', onSeeked);
-      video.currentTime = sampleTimes[0];
-    }, { once: true });
-
-    video.onerror = fallback;
-    video.load();
-  });
-}
-
 // Analisis video JJ: ekstrak audio, deteksi beat, ukur energy & dinamika
-// PLUS analisis visual frame untuk color grading clone
 async function analyzeJJRef(file) {
-  // ── Step 1: Analisis visual dari frame-frame video ────────────────
-  const visualProfile = await analyzeJJRefVisual(file);
-
   return new Promise((resolve, reject) => {
     const videoEl = document.createElement('video');
     videoEl.src   = URL.createObjectURL(file);
@@ -2206,7 +1907,6 @@ async function analyzeJJRef(file) {
             avgEnergy,
             dynRange,
             duration:     audioBuf.duration,
-            visual:       visualProfile,   // ← color grading profile dari frame analysis
           });
         };
       } catch(err) {
@@ -2311,8 +2011,7 @@ async function handleJJRef(file) {
     const profile    = JJ_EFFECT_PROFILES[profileKey];
     _jjRefStyle = { ...profile, profileKey, bpm: result.bpm, beats: result.beats,
                     loopStart: result.loopStart, loopEnd: result.loopEnd,
-                    avgEnergy: result.avgEnergy, dynRange: result.dynRange,
-                    visual: result.visual }; // ← visual color grading data
+                    avgEnergy: result.avgEnergy, dynRange: result.dynRange };
     _useJJRef = true;
 
     // Setelah aktif, tandai custom musik tidak aktif (audio dari ref dipakai)
@@ -2335,10 +2034,6 @@ async function handleJJRef(file) {
       profile.strobe   ? '🎇 Strobe flash: ON (heavy drop)' : null,
       profile.glitch   ? '🔲 Glitch block: ON' : null,
       `🎯 Dynamic range: ${result.dynRange > 0.5 ? 'Banyak drop/break contrast' : 'Energi stabil'}`,
-      // Visual grading info
-      result.visual && result.visual.isDesaturated ? '🎞️ Color grade: Monochrome/Desaturated (diclone)' : null,
-      result.visual && result.visual.isDark        ? `🌑 Tone: Dark mood — brightness ${Math.round((result.visual.lumaAvg/255)*100)}% (diclone)` : null,
-      result.visual && result.visual.grainAmount>0 ? '📽️ Film grain: ON (cinematic)' : null,
     ].filter(Boolean);
     document.getElementById('jjRefEffects').innerHTML = effects.map(e =>
       `<div style="padding:1px 0">${e}</div>`

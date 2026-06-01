@@ -303,7 +303,7 @@ let _gaya = 'normal'; // 'normal' atau 'jj'
 // Duration picker state
 let _pendingClipId = null;
 let _selectedDur   = null;
-let _subtitleOn    = true;
+let _subtitleOn    = false;
 let _subtitleText  = '';
 let _selectedQuality = '720p';
 let _customStart   = 0;   // detik, hasil pilihan user
@@ -320,14 +320,14 @@ function secToMMSS(s) {
 function getVideoDuration() {
   return new Promise(resolve => {
     if (!_videoFile) { resolve(0); return; }
-    const _fr1 = new FileReader();
-    _fr1.onerror = () => resolve(0);
-    _fr1.onload = (e1) => {
+    let bUrl = null;
+    try { bUrl = URL.createObjectURL(_videoFile); } catch(e) { resolve(0); return; }
     const v = document.createElement('video');
     v.preload = 'metadata';
-    v.src = e1.target.result;
+    v.src = bUrl;
     const done = (d) => {
       try { v.src=''; } catch(ex){}
+      if (bUrl) { URL.revokeObjectURL(bUrl); bUrl = null; }
       resolve((isFinite(d) && d > 0) ? d : 0);
     };
     v.addEventListener('loadedmetadata', () => {
@@ -338,8 +338,6 @@ function getVideoDuration() {
     }, { once: true });
     v.onerror = () => done(0);
     setTimeout(() => done(0), 8000);
-    }; // end fr1
-    _fr1.readAsDataURL(_videoFile);
   });
 }
 
@@ -573,9 +571,9 @@ async function extractAudioBlob(file, startSec, durationSec) {
   return new Promise((resolve) => {
     const _fr2 = new FileReader();
     _fr2.onerror = () => resolve(null);
-    _fr2.onload = (e2) => {
+    _fr2.onload = (ev2) => {
     const vid = document.createElement('video');
-    vid.src = e2.target.result;
+    vid.src = ev2.target.result;
     vid.muted = false;
     vid.preload = 'auto';
     vid.style.cssText = 'position:fixed;opacity:0.01;width:2px;height:2px;pointer-events:none;top:0;left:0';
@@ -620,8 +618,7 @@ async function extractAudioBlob(file, startSec, durationSec) {
 
     vid.onerror = () => { cleanup(); resolve(null); };
     setTimeout(() => { cleanup(); resolve(null); }, durationSec * 1000 + 8000);
-    }; // end fr2
-    _fr2.readAsDataURL(file);
+    }; _fr2.readAsDataURL(file);
   });
 }
 
@@ -661,25 +658,22 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
     const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
     const mimeType = mimeTypes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e){ return false; } }) || 'video/webm';
 
-    // Use FileReader for sandbox/iframe compatibility (GitHub Pages etc)
-    const _fr3 = new FileReader();
-    _fr3.onerror = () => reject(new Error('Gagal membaca file video'));
-    _fr3.onload = (e3) => {
-    const _blobUrl = e3.target.result;
+    // Gunakan createObjectURL langsung — lebih cepat & tidak ada masalah base64 overflow
+    let _blobUrl = null;
+    try { _blobUrl = URL.createObjectURL(file); } catch(e) { reject(new Error('Gagal membaca file: ' + e.message)); return; }
+
     const _setupVideo = () => {
-      const videoSrc = _blobUrl;
       const video = document.createElement('video');
-      video.src = videoSrc;
+      video.src = _blobUrl;
       video.muted = true;
       video.preload = 'auto';
       video.playsInline = true;
-      video.crossOrigin = 'anonymous';
       video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:320px;height:240px;top:-9999px;left:-9999px';
       document.body.appendChild(video);
 
       const cleanup = () => {
         try { document.body.removeChild(video); } catch(e){}
-        if (_blobUrl) { URL.revokeObjectURL(_blobUrl); _blobUrl = null; }
+        if (_blobUrl) { try { URL.revokeObjectURL(_blobUrl); } catch(ex){} _blobUrl = null; }
       };
 
       const onErr = (e) => {
@@ -777,79 +771,140 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             const chunks = [];
             rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
-            const FPS = 30;
-            let intervalHandle = null;
+            const FPS = 30, frameDur = 1000 / FPS;
+            let lastFrameAt = 0, rafHandle = null;
 
-            // ── JJ effect state ──────────────────────────────────────
             const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-            // Beat interval dari BPM track yang dipilih
-            const JJ_BPM  = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 120;
-            const JJ_BEAT = 60 / JJ_BPM; // detik per beat
-            // Flash state
-            let jjFlashAlpha = 0;
-            // Shake state
-            let jjShakeX = 0, jjShakeY = 0;
-            // Zoom state
-            let jjZoom = 1.0;
-            let jjLastBeat = -1;
+            const JJ_BPM  = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 138;
+            const JJ_BEAT = 60 / JJ_BPM;
+            const JJ_HALF = JJ_BEAT / 2;
+            let jjFlashAlpha=0, jjShakeX=0, jjShakeY=0, jjZoom=1.0;
+            let jjLastBeat=-1, jjLastHalf=-1, jjRgbShift=0;
 
-            const drawFrameContent = () => {
+            const drawFrame = (now) => {
+              rafHandle = requestAnimationFrame(drawFrame);
+              if (now - lastFrameAt < frameDur - 1) return;
+              lastFrameAt = now;
               const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
               const progress = Math.min(1, elapsed / requestedDur);
 
-              // ── JJ Beat Detection ──────────────────────────────────
               if (IS_JJ) {
                 const beatIdx = Math.floor(elapsed / JJ_BEAT);
+                const halfIdx = Math.floor(elapsed / JJ_HALF);
+                const quarterIdx = Math.floor(elapsed / (JJ_BEAT/4));
                 if (beatIdx !== jjLastBeat) {
                   jjLastBeat = beatIdx;
-                  // On beat: trigger flash + shake + zoom
-                  jjFlashAlpha = 0.55;
-                  const shakeAmt = 8 + Math.random() * 10;
-                  jjShakeX = (Math.random() - 0.5) * shakeAmt;
-                  jjShakeY = (Math.random() - 0.5) * shakeAmt;
-                  // Alternate zoom in / zoom out on each beat
-                  jjZoom = (beatIdx % 2 === 0) ? 1.06 : 0.97;
+                  const isDwn = beatIdx%4===0;
+                  const isSnare = beatIdx%4===1||beatIdx%4===3;
+                  jjFlashAlpha = isDwn ? 0.82 : isSnare ? 0.6 : 0.42;
+                  const sh = isDwn ? 26 : isSnare ? 16 : 10;
+                  jjShakeX = (Math.random()-0.5)*sh;
+                  jjShakeY = (Math.random()-0.5)*sh*(isDwn?1.4:0.8);
+                  jjZoom = isDwn ? 1.13 : isSnare ? 0.91 : (beatIdx%2===0?1.07:0.96);
+                  jjRgbShift = isDwn ? 18 : isSnare ? 11 : 6;
                 }
-                // Decay flash and shake between beats
-                jjFlashAlpha  = Math.max(0, jjFlashAlpha  - 0.07);
-                jjShakeX      = jjShakeX  * 0.72;
-                jjShakeY      = jjShakeY  * 0.72;
-                jjZoom        = jjZoom + (1.0 - jjZoom) * 0.18;
+                if (halfIdx !== jjLastHalf) {
+                  jjLastHalf = halfIdx;
+                  jjShakeX+=(Math.random()-0.5)*8;
+                  jjShakeY+=(Math.random()-0.5)*8;
+                }
+                jjFlashAlpha=Math.max(0,jjFlashAlpha-0.08);
+                jjShakeX*=0.55; jjShakeY*=0.55;
+                jjZoom+=(1.0-jjZoom)*0.18;
+                jjRgbShift=Math.max(0,jjRgbShift-1.1);
               }
 
-              // ── Draw video frame (with JJ transform) ──────────────
+              // ── Draw video frame (with JJ transform + RGB split) ──
               ctx.save();
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = 'high';
 
               if (IS_JJ && (jjZoom !== 1.0 || jjShakeX !== 0 || jjShakeY !== 0)) {
-                // Apply zoom from center + shake offset
                 const cx = OUT_W / 2, cy = OUT_H / 2;
                 ctx.translate(cx + jjShakeX, cy + jjShakeY);
                 ctx.scale(jjZoom, jjZoom);
                 ctx.translate(-cx, -cy);
               }
-              try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
+
+              if (IS_JJ && jjRgbShift > 1.5) {
+                // RGB chromatic aberration split
+                const shift = jjRgbShift;
+                ctx.globalCompositeOperation = 'source-over';
+                // Red channel offset left
+                ctx.globalAlpha = 0.55;
+                ctx.filter = `hue-rotate(0deg) saturate(3)`;
+                try { ctx.drawImage(video, sx, sy, sw, sh, -shift, 0, OUT_W, OUT_H); } catch(e){}
+                // Blue channel offset right
+                ctx.filter = `hue-rotate(200deg) saturate(3)`;
+                try { ctx.drawImage(video, sx, sy, sw, sh, shift, 0, OUT_W, OUT_H); } catch(e){}
+                ctx.filter = 'none';
+                ctx.globalAlpha = 0.85;
+                try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
+                ctx.globalAlpha = 1;
+              } else {
+                try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
+              }
               ctx.restore();
 
               // ── JJ Flash overlay ──────────────────────────────────
               if (IS_JJ && jjFlashAlpha > 0.01) {
-                ctx.globalAlpha = jjFlashAlpha;
-                // Alternate white / cyan flash
-                ctx.fillStyle = (jjLastBeat % 3 === 0) ? '#ffffff' : (jjLastBeat % 3 === 1) ? '#00f5ff' : '#ff0080';
+                ctx.globalAlpha = jjFlashAlpha * 0.75;
+                const flashColors = ['#ffffff','#ffe600','#00f5ff','#ff0080','#ffffff','#00ff88'];
+                ctx.fillStyle = flashColors[jjLastBeat % flashColors.length];
                 ctx.fillRect(0, 0, OUT_W, OUT_H);
                 ctx.globalAlpha = 1;
               }
 
-              // ── JJ Color Grade (high contrast) ────────────────────
+              // ── JJ Color Grade: high contrast + saturation boost ──
               if (IS_JJ) {
+                // Diagonal scan line overlay (jedag jedug aesthetic)
+                if (jjLastBeat % 4 === 0) {
+                  ctx.globalAlpha = 0.07;
+                  for (let y = 0; y < OUT_H; y += 4) {
+                    ctx.fillStyle = y%8===0 ? '#ffffff' : '#000000';
+                    ctx.fillRect(0, y, OUT_W, 2);
+                  }
+                  ctx.globalAlpha = 1;
+                }
                 // Vignette
-                const vig = ctx.createRadialGradient(OUT_W/2, OUT_H/2, OUT_H*0.3, OUT_W/2, OUT_H/2, OUT_H*0.8);
+                const vig = ctx.createRadialGradient(OUT_W/2, OUT_H/2, OUT_H*0.25, OUT_W/2, OUT_H/2, OUT_H*0.85);
                 vig.addColorStop(0, 'rgba(0,0,0,0)');
-                vig.addColorStop(1, 'rgba(0,0,0,0.45)');
+                vig.addColorStop(1, 'rgba(0,0,0,0.55)');
                 ctx.globalAlpha = 1;
                 ctx.fillStyle = vig;
                 ctx.fillRect(0, 0, OUT_W, OUT_H);
+
+                // Yellow/pink glow edge (jedag jedug signature color)
+                if (jjLastBeat % 2 === 0) {
+                  ctx.globalAlpha = 0.12;
+                  const edgeGlow = ctx.createLinearGradient(0, 0, OUT_W, OUT_H);
+                  edgeGlow.addColorStop(0, '#ffe600');
+                  edgeGlow.addColorStop(0.5, 'transparent');
+                  edgeGlow.addColorStop(1, '#ff0080');
+                  ctx.fillStyle = edgeGlow;
+                  ctx.fillRect(0, 0, OUT_W, OUT_H);
+                  ctx.globalAlpha = 1;
+                }
+              }
+
+              // ── JJ Beat Indicator (●●● top of screen) ────────
+              if (IS_JJ) {
+                const dots = 4;
+                const dotR = Math.round(OUT_W * 0.022);
+                const dotSpacing = dotR * 3;
+                const totalW = dots * dotSpacing;
+                const startX = (OUT_W - totalW) / 2 + dotSpacing/2;
+                const dotY = dotR * 2.2;
+                const curBeat = jjLastBeat % dots;
+                for (let d = 0; d < dots; d++) {
+                  const x = startX + d * dotSpacing;
+                  ctx.beginPath();
+                  ctx.arc(x, dotY, d === curBeat ? dotR * 1.4 : dotR * 0.8, 0, Math.PI*2);
+                  ctx.globalAlpha = d === curBeat ? 1 : 0.3;
+                  ctx.fillStyle = d === curBeat ? '#ffe600' : '#ffffff';
+                  ctx.fill();
+                }
+                ctx.globalAlpha = 1;
               }
 
               // Progress bar
@@ -887,15 +942,22 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
                   const boxW = Math.min(maxW+padX*2, OUT_W*0.92), boxH = shown.length*lineH+padY*2;
                   const boxX = (OUT_W-boxW)/2, boxY = OUT_H*0.80-boxH;
                   if (IS_JJ) {
-                    // JJ style: no box, bold stroke text
+                    // JJ style: large impactful text, thick stroke, center screen
+                    const jjY = OUT_H * 0.55; // center-ish position
                     ctx.globalAlpha = 1;
-                    ctx.fillStyle = '#ffe600';
-                    ctx.strokeStyle = '#000';
-                    ctx.lineWidth = fontSize * 0.12;
                     ctx.lineJoin = 'round';
                     shown.forEach((ln, i) => {
-                      ctx.strokeText(ln, OUT_W/2, boxY+padY+fontSize+i*lineH);
-                      ctx.fillText(ln,   OUT_W/2, boxY+padY+fontSize+i*lineH);
+                      const y = jjY + i * lineH;
+                      // Multi-layer shadow for depth
+                      ctx.strokeStyle = '#000';
+                      ctx.lineWidth = fontSize * 0.18;
+                      ctx.strokeText(ln, OUT_W/2, y);
+                      ctx.lineWidth = fontSize * 0.08;
+                      ctx.strokeStyle = jjLastBeat%2===0 ? '#ff0080' : '#00f5ff';
+                      ctx.strokeText(ln, OUT_W/2, y);
+                      // Yellow main fill
+                      ctx.fillStyle = jjFlashAlpha > 0.3 ? '#ffffff' : '#ffe600';
+                      ctx.fillText(ln, OUT_W/2, y);
                     });
                   } else {
                     ctx.globalAlpha = 0.82; ctx.fillStyle = '#000';
@@ -916,7 +978,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             }, 400);
 
             rec.onstop = () => {
-              clearInterval(intervalHandle);
+              cancelAnimationFrame(rafHandle);
               clearInterval(progressInterval);
               if (audioCtx) try { audioCtx.close(); } catch(e){}
               cleanup();
@@ -926,8 +988,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
             // Draw first frame before starting
             try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-            rec.start(33);
-            intervalHandle = setInterval(drawFrameContent, 1000/FPS);
+            rec.start(200);
+            rafHandle = requestAnimationFrame(drawFrame);
             video.playbackRate = 1;
             video.play().catch(e => console.warn('play() error:', e));
 
@@ -952,8 +1014,6 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
       video.load();
     };
     _setupVideo();
-    }; // end fr3
-    _fr3.readAsDataURL(file);
   });
 }
 
@@ -1387,76 +1447,110 @@ let _musikAudioEl  = null;
 // ── Synthetic Beat Generator (Web Audio) ──────────────────────────
 // Dipakai kalau URL musik gagal load (offline / CORS)
 function createSyntheticBeatBuffer(audioCtx, durationSec, bpm) {
-  const sampleRate  = audioCtx.sampleRate;
-  const totalFrames = Math.ceil(sampleRate * durationSec);
-  const buffer      = audioCtx.createBuffer(2, totalFrames, sampleRate);
-  const beatSec     = 60 / bpm;
-  const L = buffer.getChannelData(0);
-  const R = buffer.getChannelData(1);
+  const sr = audioCtx.sampleRate;
+  const frames = Math.ceil(sr * durationSec);
+  const buf = audioCtx.createBuffer(2, frames, sr);
+  const L = buf.getChannelData(0);
+  const R = buf.getChannelData(1);
+  const beatSec = 60 / bpm;
+  const totalBeats = Math.floor(durationSec / beatSec);
 
-  for (let beat = 0; beat * beatSec < durationSec; beat++) {
-    const beatStart = Math.floor(beat * beatSec * sampleRate);
-    const isDownbeat = beat % 4 === 0;
-    const isSnare    = beat % 4 === 2;
-
-    // Kick drum — low thump
-    if (isDownbeat || beat % 2 === 0) {
-      const kickLen = Math.floor(sampleRate * 0.15);
-      for (let i = 0; i < kickLen && beatStart + i < totalFrames; i++) {
-        const t   = i / sampleRate;
-        const env = Math.exp(-t * 30);
-        const freq= 60 * Math.exp(-t * 20);
-        const val = Math.sin(2 * Math.PI * freq * t) * env * 0.9;
-        L[beatStart + i] += val;
-        R[beatStart + i] += val;
-      }
+  const writeB = (start, len, fn) => {
+    for (let i = 0; i < len && start+i < frames; i++) {
+      const v = fn(i/sr, i/len);
+      L[start+i] += v; R[start+i] += v;
     }
+  };
 
-    // Snare — noise burst
-    if (isSnare) {
-      const snareLen = Math.floor(sampleRate * 0.1);
-      for (let i = 0; i < snareLen && beatStart + i < totalFrames; i++) {
-        const t   = i / sampleRate;
-        const env = Math.exp(-t * 25);
-        const val = (Math.random() * 2 - 1) * env * 0.5;
-        L[beatStart + i] += val;
-        R[beatStart + i] += val;
-      }
-    }
+  // Jungle Dutch kick
+  const kick = (t) => {
+    const s = Math.floor(t*sr), kl = Math.floor(sr*0.22);
+    writeB(s, kl, (ti,p) => {
+      const env = Math.exp(-ti*22);
+      const f = 180*Math.exp(-ti*28)+45;
+      const punch = p<0.04 ? Math.sin(Math.PI*p/0.04)*0.25 : 0;
+      return (Math.sin(2*Math.PI*f*ti)*env + punch)*1.1;
+    });
+    writeB(s, Math.floor(sr*0.35), (ti) => Math.sin(2*Math.PI*55*ti)*Math.exp(-ti*12)*0.55);
+  };
 
-    // Hi-hat — short tick tiap half-beat
-    const hihatStart = Math.floor((beat + 0.5) * beatSec * sampleRate);
-    const hihatLen   = Math.floor(sampleRate * 0.03);
-    for (let i = 0; i < hihatLen && hihatStart + i < totalFrames; i++) {
-      const t   = i / sampleRate;
-      const env = Math.exp(-t * 80);
-      const val = (Math.random() * 2 - 1) * env * 0.25;
-      L[hihatStart + i] += val;
-      R[hihatStart + i] += val;
-    }
+  // Snare with reverb
+  const snare = (t, hard=true) => {
+    const s = Math.floor(t*sr), sl = Math.floor(sr*(hard?0.18:0.12));
+    writeB(s, sl, (ti) => {
+      const env = Math.exp(-ti*(hard?18:28));
+      return ((Math.random()*2-1)*env*(hard?0.7:0.45)) + Math.sin(2*Math.PI*200*ti)*Math.exp(-ti*30)*0.3;
+    });
+    writeB(s+Math.floor(sr*0.08), Math.floor(sr*0.4), (ti) => (Math.random()*2-1)*Math.exp(-ti*8)*0.12);
+  };
 
-    // Bass synth — tiap downbeat
-    if (isDownbeat) {
-      const bassLen  = Math.floor(sampleRate * 0.4);
-      const bassFreq = [55, 55, 65, 49][Math.floor(beat / 4) % 4];
-      for (let i = 0; i < bassLen && beatStart + i < totalFrames; i++) {
-        const t   = i / sampleRate;
-        const env = Math.exp(-t * 4) * 0.6;
-        const val = (Math.sin(2 * Math.PI * bassFreq * t) + 0.3 * Math.sin(2 * Math.PI * bassFreq * 2 * t)) * env;
-        L[beatStart + i] += val;
-        R[beatStart + i] += val;
-      }
-    }
+  // Hi-hat
+  const hihat = (t, open=false) => {
+    const s = Math.floor(t*sr), hl = Math.floor(sr*(open?0.20:0.035));
+    writeB(s, hl, (ti) => (Math.random()*2-1)*Math.exp(-ti*(open?14:120))*0.28);
+  };
+
+  // Brass stab (jedagjedug signature)
+  const brass = (t, freq=220, dur=0.12) => {
+    const s = Math.floor(t*sr), bl = Math.floor(sr*dur);
+    writeB(s, bl, (ti,p) => {
+      const env = p<0.05?p/0.05:Math.exp(-(p-0.05)*14);
+      return (Math.sin(2*Math.PI*freq*ti)+Math.sin(2*Math.PI*freq*2*ti)*0.5+Math.sin(2*Math.PI*freq*3*ti)*0.25)*env*0.32;
+    });
+  };
+
+  // Funky distorted bass
+  const bass = (t, freq, dur=0.18) => {
+    const s = Math.floor(t*sr), bl = Math.floor(sr*dur);
+    writeB(s, bl, (ti,p) => {
+      const env = p<0.02?p/0.02:Math.exp(-(p-0.02)*8);
+      return Math.tanh(((freq*ti%1)*2-1)*2.5)*0.5*env;
+    });
+  };
+
+  // Build-up riser (before drop)
+  const riser = (t, dur) => {
+    const s = Math.floor(t*sr), rl = Math.floor(sr*dur);
+    writeB(s, rl, (ti,p) => Math.sin(2*Math.PI*(80*Math.pow(2,p*2.5))*ti)*p*0.18 + (Math.random()*2-1)*p*0.08);
+  };
+
+  const bassNotes = [55,55,73.4,82.4,61.7,55,65.4,73.4];
+  const brassNotes = [220,277.2,220,246.9,185,220,246.9,185];
+
+  for (let b = 0; b < totalBeats; b++) {
+    const t = b * beatSec;
+    const bi = b % 4;
+    const bar4 = Math.floor(b/4) % 8;
+
+    if (bar4 === 7 && bi === 0) riser(t, beatSec*4);
+
+    // Kick: jungle dutch double kick pattern
+    if (bi===0){kick(t);kick(t+beatSec*0.5);}
+    if (bi===1){kick(t);kick(t+beatSec*0.25);}
+    if (bi===2) kick(t);
+    if (bi===3){kick(t);kick(t+beatSec*0.75);}
+
+    // Snare on 2 and 4
+    if (bi===1||bi===3) snare(t, bar4<4);
+
+    // Hi-hats
+    hihat(t, bar4>=4 && bi%2===1);
+    hihat(t+beatSec*0.5, false);
+    if (bar4>=4){hihat(t+beatSec*0.25,false);hihat(t+beatSec*0.75,false);}
+
+    // Brass stabs — jedagjedug signature on offbeats
+    if (bi===0||bi===2) brass(t+beatSec*0.5, brassNotes[b%8], 0.1);
+    if (bar4>=4&&(bi===1||bi===3)) brass(t+beatSec*0.25, brassNotes[(b+4)%8]*1.5, 0.08);
+
+    // Funky bass
+    bass(t, bassNotes[b%8], beatSec*0.85);
+    if (bar4>=4) bass(t+beatSec*0.5, bassNotes[(b+4)%8]*0.75, beatSec*0.35);
   }
 
-  // Normalize
-  for (let i = 0; i < totalFrames; i++) {
-    L[i] = Math.max(-1, Math.min(1, L[i]));
-    R[i] = Math.max(-1, Math.min(1, R[i]));
-  }
-  return buffer;
+  // Hard limiter
+  for (let i=0;i<frames;i++){L[i]=Math.tanh(L[i]*0.7)*0.9;R[i]=Math.tanh(R[i]*0.7)*0.9;}
+  return buf;
 }
-
 async function loadTrackBuffer(audioCtx, track, durationSec) {
   // Track synthetic — langsung generate
   if (!track.url) {

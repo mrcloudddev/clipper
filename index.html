@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KlipAI — Potong Klip Viral Otomatis</title>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
 </head>
 <body>
 <style>
@@ -63,8 +61,8 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
     <label id="dropzone" for="fInput" ondragover="event.preventDefault();this.style.borderColor='rgba(167,139,250,0.6)'" ondragleave="this.style.borderColor='rgba(167,139,250,0.2)'" ondrop="dropFile(event)" style="display:block;border:1.5px dashed rgba(167,139,250,0.2);border-radius:12px;padding:24px;text-align:center;cursor:pointer">
       <div style="font-size:22px;color:rgba(167,139,250,0.5);margin-bottom:6px">⬆</div>
       <div style="font-size:14px;color:rgba(240,237,232,0.65);font-weight:500">Klik atau seret video ke sini</div>
-      <div style="font-size:12px;color:rgba(240,237,232,0.3);margin-top:4px">MP4, MOV, MKV, AVI, FLV, WMV, TS, 3GP · Maks 4GB · <span style="color:#86efac">✓ Semua format didukung</span></div>
-      <input type="file" id="fInput" accept="video/*,.mkv,.avi,.flv,.wmv,.ts,.m2ts,.3gp,.divx" style="display:none" onchange="handleFile(this.files[0])"/>
+      <div style="font-size:12px;color:rgba(240,237,232,0.3);margin-top:4px">MP4, MOV, AVI · Maks 2GB · <span style="color:#86efac">✓ Unduh MP4 nyata</span></div>
+      <input type="file" id="fInput" accept="video/*" style="display:none" onchange="handleFile(this.files[0])"/>
     </label>
   </div>
 
@@ -285,20 +283,6 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
 </div>
 
 <script>
-// FFmpeg.wasm — lazy getters (CDN loads async, avoid TDZ)
-function getFFmpegClass() {
-  if (window.FFmpegWASM && window.FFmpegWASM.FFmpeg) return window.FFmpegWASM.FFmpeg;
-  if (window.FFmpeg && window.FFmpeg.FFmpeg) return window.FFmpeg.FFmpeg;
-  if (window.FFmpeg && typeof window.FFmpeg === 'function') return window.FFmpeg;
-  return null;
-}
-function getFetchFile() {
-  if (window.FFmpegUtil && window.FFmpegUtil.fetchFile) return window.FFmpegUtil.fetchFile;
-  if (window.FFmpegWASM && window.FFmpegWASM.fetchFile) return window.FFmpegWASM.fetchFile;
-  // Fallback: manual arrayBuffer read
-  return async (f) => new Uint8Array(await f.arrayBuffer());
-}
-
 const CATS = [
   {label:'Edukasi AI',    badge:'HOT', bColor:'rgba(239,68,68,0.2)',   bText:'#f87171'},
   {label:'Sejarah AI',   badge:'NEW', bColor:'rgba(59,130,246,0.2)',  bText:'#60a5fa'},
@@ -336,14 +320,14 @@ function secToMMSS(s) {
 function getVideoDuration() {
   return new Promise(resolve => {
     if (!_videoFile) { resolve(0); return; }
-    let bUrl = null;
-    try { bUrl = URL.createObjectURL(_videoFile); } catch(e) { resolve(0); return; }
+    const _fr1 = new FileReader();
+    _fr1.onerror = () => resolve(0);
+    _fr1.onload = (e1) => {
     const v = document.createElement('video');
     v.preload = 'metadata';
-    v.src = bUrl;
+    v.src = e1.target.result;
     const done = (d) => {
       try { v.src=''; } catch(ex){}
-      if (bUrl) { URL.revokeObjectURL(bUrl); bUrl = null; }
       resolve((isFinite(d) && d > 0) ? d : 0);
     };
     v.addEventListener('loadedmetadata', () => {
@@ -354,6 +338,8 @@ function getVideoDuration() {
     }, { once: true });
     v.onerror = () => done(0);
     setTimeout(() => done(0), 8000);
+    }; // end fr1
+    _fr1.readAsDataURL(_videoFile);
   });
 }
 
@@ -585,10 +571,11 @@ function getAudioCtx() {
 // ─── Audio extraction + AI transcription → timed subtitles ───────
 async function extractAudioBlob(file, startSec, durationSec) {
   return new Promise((resolve) => {
-    let bUrl = null;
-    try { bUrl = URL.createObjectURL(file); } catch(e) { resolve(null); return; }
+    const _fr2 = new FileReader();
+    _fr2.onerror = () => resolve(null);
+    _fr2.onload = (e2) => {
     const vid = document.createElement('video');
-    vid.src = bUrl;
+    vid.src = e2.target.result;
     vid.muted = false;
     vid.preload = 'auto';
     vid.style.cssText = 'position:fixed;opacity:0.01;width:2px;height:2px;pointer-events:none;top:0;left:0';
@@ -632,7 +619,9 @@ async function extractAudioBlob(file, startSec, durationSec) {
     }, { once: true });
 
     vid.onerror = () => { cleanup(); resolve(null); };
-    setTimeout(() => { cleanup(); resolve(null); }, durationSec * 1000 + 8000); // hard timeout
+    setTimeout(() => { cleanup(); resolve(null); }, durationSec * 1000 + 8000);
+    }; // end fr2
+    _fr2.readAsDataURL(file);
   });
 }
 
@@ -672,15 +661,12 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
     const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
     const mimeType = mimeTypes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e){ return false; } }) || 'video/webm';
 
-    // Use createObjectURL — no memory copy, works for large files
-    let _blobUrl = null;
+    // Use FileReader for sandbox/iframe compatibility (GitHub Pages etc)
+    const _fr3 = new FileReader();
+    _fr3.onerror = () => reject(new Error('Gagal membaca file video'));
+    _fr3.onload = (e3) => {
+    const _blobUrl = e3.target.result;
     const _setupVideo = () => {
-      try {
-        _blobUrl = URL.createObjectURL(file);
-      } catch(e) {
-        reject(new Error('Gagal membaca file video: ' + e.message));
-        return;
-      }
       const videoSrc = _blobUrl;
       const video = document.createElement('video');
       video.src = videoSrc;
@@ -698,7 +684,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
       const onErr = (e) => {
         const code = video.error ? video.error.code : '?';
-        const msgs = {1:'Proses dibatalkan',2:'Error jaringan',3:'Decode gagal — file mungkin corrupt',4:'Format tidak bisa diplay browser langsung'};
+        const msgs = {1:'Proses dibatalkan',2:'Error jaringan',3:'Decode gagal — coba convert ke MP4 H.264',4:'Format tidak didukung browser — gunakan MP4 H.264'};
         const detail = msgs[code] || ('Kode error: ' + code);
         cleanup();
         reject(new Error('Gagal baca video: ' + detail));
@@ -791,103 +777,54 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             const chunks = [];
             rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
-            const FPS = 30, frameDur = 1000 / FPS;
-            let lastFrameAt = 0, rafHandle = null;
+            const FPS = 30;
+            let intervalHandle = null;
 
             // ── JJ effect state ──────────────────────────────────────
-            const IS_JJ   = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-            const JJ_BPM  = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 138;
-            const JJ_BEAT = 60 / JJ_BPM;
-            const JJ_STYLE= (IS_JJ && _selectedTrack) ? (_selectedTrack.synthStyle||'djviralid') : 'djviralid';
+            const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
+            // Beat interval dari BPM track yang dipilih
+            const JJ_BPM  = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 120;
+            const JJ_BEAT = 60 / JJ_BPM; // detik per beat
+            // Flash state
+            let jjFlashAlpha = 0;
+            // Shake state
+            let jjShakeX = 0, jjShakeY = 0;
+            // Zoom state
+            let jjZoom = 1.0;
+            let jjLastBeat = -1;
 
-            // Beat state
-            let jjBeatIdx   = -1;
-            let jjFlash     = 0;    // white/color flash alpha
-            let jjShakeX    = 0, jjShakeY = 0;
-            let jjZoom      = 1.0;
-            // Glitch state
-            let jjGlitch    = 0;    // glitch intensity 0-1
-            let jjGlitchDir = 0;    // RGB shift px
-            // Scanline / overlay alpha
-            let jjScanAlpha = 0;
-            // Speed lines alpha
-            let jjSpeedAlpha= 0;
-            // Pop text
-            const JJ_POPWORDS = ['WOOOOH!','GAS!','KEREN!','VIRAL!','OMG!','MANTAP!','GILA!','WOW!'];
-            let jjPopText   = '';
-            let jjPopAlpha  = 0;
-            let jjPopScale  = 1;
-            // Color tint
-            let jjTint      = null; // {r,g,b,a}
-            // Half-beat flip
-            let jjHalfBeat  = -1;
-
-            const drawFrame = (now) => {
-              rafHandle = requestAnimationFrame(drawFrame);
-              if (now - lastFrameAt < frameDur - 1) return;
-              lastFrameAt = now;
+            const drawFrameContent = () => {
               const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
               const progress = Math.min(1, elapsed / requestedDur);
 
-              // ── JJ Beat & Half-Beat Detection ─────────────────────
+              // ── JJ Beat Detection ──────────────────────────────────
               if (IS_JJ) {
-                const curBeat = Math.floor(elapsed / JJ_BEAT);
-                const curHalf = Math.floor(elapsed / (JJ_BEAT * 0.5));
-
-                if (curBeat !== jjBeatIdx) {
-                  jjBeatIdx = curBeat;
-                  // Shake
-                  const shakeMag = (JJ_STYLE === 'hard' || JJ_STYLE === 'koplo') ? 18 : 10;
-                  jjShakeX = (Math.random()-0.5)*shakeMag;
-                  jjShakeY = (Math.random()-0.5)*shakeMag*0.5;
-                  // Zoom alternate
-                  jjZoom = (curBeat%2===0) ? 1.10 : 0.94;
-                  // Flash
-                  jjFlash = (JJ_STYLE==='slowjam') ? 0.18 : 0.55;
-                  // Glitch
-                  jjGlitch    = (Math.random()>0.4) ? 0.8 + Math.random()*0.2 : 0;
-                  jjGlitchDir = (Math.random()-0.5)*18;
-                  // Speed lines on downbeat
-                  if (curBeat%4===0) jjSpeedAlpha = 0.7;
-                  // Pop text every 4 beats
-                  if (curBeat%4===0 && JJ_STYLE!=='slowjam') {
-                    jjPopText  = JJ_POPWORDS[Math.floor(Math.random()*JJ_POPWORDS.length)];
-                    jjPopAlpha = 1; jjPopScale = 1.5;
-                  }
-                  // Color tint
-                  const tints = {
-                    djviralid: [{r:255,g:0,b:180},{r:0,g:220,b:255},{r:255,g:220,b:0}],
-                    angklung:  [{r:0,g:200,b:100},{r:255,g:180,b:0},{r:0,g:150,b:255}],
-                    koplo:     [{r:255,g:50,b:50},{r:255,g:200,b:0},{r:200,g:0,b:255}],
-                    slowjam:   [{r:100,g:100,b:255},{r:180,g:100,b:255},{r:100,g:200,b:255}],
-                    hard:      [{r:255,g:0,b:0},{r:255,g:255,b:0},{r:0,g:255,b:255}],
-                  };
-                  const opts = tints[JJ_STYLE] || tints.djviralid;
-                  const c = opts[curBeat % opts.length];
-                  jjTint = {r:c.r, g:c.g, b:c.b, a: JJ_STYLE==='slowjam'?0.06:0.12};
+                const beatIdx = Math.floor(elapsed / JJ_BEAT);
+                if (beatIdx !== jjLastBeat) {
+                  jjLastBeat = beatIdx;
+                  // On beat: trigger flash + shake + zoom
+                  jjFlashAlpha = 0.55;
+                  const shakeAmt = 8 + Math.random() * 10;
+                  jjShakeX = (Math.random() - 0.5) * shakeAmt;
+                  jjShakeY = (Math.random() - 0.5) * shakeAmt;
+                  // Alternate zoom in / zoom out on each beat
+                  jjZoom = (beatIdx % 2 === 0) ? 1.06 : 0.97;
                 }
-                if (curHalf !== jjHalfBeat) {
-                  jjHalfBeat = curHalf;
-                  if (JJ_STYLE!=='slowjam') jjScanAlpha = 0.35;
-                }
-                // Decay
-                jjFlash      = Math.max(0, jjFlash     - 0.08);
-                jjShakeX    *= 0.68; jjShakeY    *= 0.68;
-                jjZoom       = jjZoom + (1-jjZoom)*0.2;
-                jjGlitch     = Math.max(0, jjGlitch    - 0.1);
-                jjScanAlpha  = Math.max(0, jjScanAlpha - 0.05);
-                jjSpeedAlpha = Math.max(0, jjSpeedAlpha- 0.06);
-                jjPopAlpha   = Math.max(0, jjPopAlpha  - 0.04);
-                jjPopScale   = jjPopScale + (1 - jjPopScale)*0.25;
-                if (jjTint) jjTint.a = Math.max(0, jjTint.a - 0.004);
+                // Decay flash and shake between beats
+                jjFlashAlpha  = Math.max(0, jjFlashAlpha  - 0.07);
+                jjShakeX      = jjShakeX  * 0.72;
+                jjShakeY      = jjShakeY  * 0.72;
+                jjZoom        = jjZoom + (1.0 - jjZoom) * 0.18;
               }
 
-              // ── 1. Draw video frame ────────────────────────────────
+              // ── Draw video frame (with JJ transform) ──────────────
               ctx.save();
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = 'high';
-              if (IS_JJ) {
-                const cx = OUT_W/2, cy = OUT_H/2;
+
+              if (IS_JJ && (jjZoom !== 1.0 || jjShakeX !== 0 || jjShakeY !== 0)) {
+                // Apply zoom from center + shake offset
+                const cx = OUT_W / 2, cy = OUT_H / 2;
                 ctx.translate(cx + jjShakeX, cy + jjShakeY);
                 ctx.scale(jjZoom, jjZoom);
                 ctx.translate(-cx, -cy);
@@ -895,118 +832,37 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
               ctx.restore();
 
-              // ── 2. RGB Glitch split ────────────────────────────────
-              if (IS_JJ && jjGlitch > 0.2) {
-                const shift = jjGlitchDir;
-                const glitchH = Math.floor(OUT_H * 0.08 * jjGlitch);
-                const glitchY = Math.floor(Math.random() * (OUT_H - glitchH));
-                try {
-                  const imgData = ctx.getImageData(0, glitchY, OUT_W, glitchH);
-                  ctx.globalAlpha = jjGlitch * 0.6;
-                  ctx.globalCompositeOperation = 'screen';
-                  ctx.putImageData(imgData, shift, glitchY);
-                  ctx.putImageData(imgData, -shift*0.5, glitchY + 3);
-                  ctx.globalCompositeOperation = 'source-over';
-                  ctx.globalAlpha = 1;
-                } catch(e){}
-                // Horizontal glitch bar
-                const bH = Math.max(2, Math.floor(OUT_H*0.012));
-                ctx.globalAlpha = jjGlitch * 0.5;
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(0, glitchY, OUT_W, bH);
-                ctx.globalAlpha = 1;
-              }
-
-              // ── 3. Color tint overlay ──────────────────────────────
-              if (IS_JJ && jjTint && jjTint.a > 0.005) {
-                ctx.globalAlpha = jjTint.a;
-                ctx.fillStyle = `rgb(${jjTint.r},${jjTint.g},${jjTint.b})`;
-                ctx.globalCompositeOperation = 'screen';
-                ctx.fillRect(0, 0, OUT_W, OUT_H);
-                ctx.globalCompositeOperation = 'source-over';
-                ctx.globalAlpha = 1;
-              }
-
-              // ── 4. Flash overlay ───────────────────────────────────
-              if (IS_JJ && jjFlash > 0.02) {
-                const flashColors = {djviralid:'#ff00b4',angklung:'#00ff88',koplo:'#ffcc00',slowjam:'#aaaaff',hard:'#ffffff'};
-                ctx.globalAlpha = jjFlash * 0.7;
-                ctx.fillStyle = (jjBeatIdx%2===0) ? '#ffffff' : (flashColors[JJ_STYLE]||'#ff00b4');
+              // ── JJ Flash overlay ──────────────────────────────────
+              if (IS_JJ && jjFlashAlpha > 0.01) {
+                ctx.globalAlpha = jjFlashAlpha;
+                // Alternate white / cyan flash
+                ctx.fillStyle = (jjLastBeat % 3 === 0) ? '#ffffff' : (jjLastBeat % 3 === 1) ? '#00f5ff' : '#ff0080';
                 ctx.fillRect(0, 0, OUT_W, OUT_H);
                 ctx.globalAlpha = 1;
               }
 
-              // ── 5. Speed lines (radial) ────────────────────────────
-              if (IS_JJ && jjSpeedAlpha > 0.02) {
-                ctx.save();
-                ctx.globalAlpha = jjSpeedAlpha * 0.55;
-                const cx = OUT_W/2, cy = OUT_H/2;
-                for (let i = 0; i < 24; i++) {
-                  const angle = (i / 24) * Math.PI * 2;
-                  const len   = OUT_H * 0.55 + Math.random() * OUT_H * 0.2;
-                  const grad  = ctx.createLinearGradient(cx, cy, cx+Math.cos(angle)*len, cy+Math.sin(angle)*len);
-                  grad.addColorStop(0, 'rgba(255,255,255,0)');
-                  grad.addColorStop(0.5,'rgba(255,255,255,0.5)');
-                  grad.addColorStop(1, 'rgba(255,255,255,0)');
-                  ctx.strokeStyle = grad;
-                  ctx.lineWidth   = 1.5 + Math.random()*2;
-                  ctx.beginPath(); ctx.moveTo(cx,cy);
-                  ctx.lineTo(cx+Math.cos(angle)*len, cy+Math.sin(angle)*len);
-                  ctx.stroke();
-                }
-                ctx.restore();
-              }
-
-              // ── 6. Scanlines ──────────────────────────────────────
-              if (IS_JJ && jjScanAlpha > 0.02) {
-                ctx.globalAlpha = jjScanAlpha * 0.4;
-                ctx.fillStyle = '#000';
-                for (let y = 0; y < OUT_H; y += 4) ctx.fillRect(0, y, OUT_W, 2);
-                ctx.globalAlpha = 1;
-              }
-
-              // ── 7. Vignette ───────────────────────────────────────
+              // ── JJ Color Grade (high contrast) ────────────────────
               if (IS_JJ) {
-                const vig = ctx.createRadialGradient(OUT_W/2,OUT_H/2,OUT_H*0.25,OUT_W/2,OUT_H/2,OUT_H*0.85);
-                vig.addColorStop(0,'rgba(0,0,0,0)');
-                vig.addColorStop(1,'rgba(0,0,0,0.6)');
-                ctx.globalAlpha = 1; ctx.fillStyle = vig;
-                ctx.fillRect(0,0,OUT_W,OUT_H);
+                // Vignette
+                const vig = ctx.createRadialGradient(OUT_W/2, OUT_H/2, OUT_H*0.3, OUT_W/2, OUT_H/2, OUT_H*0.8);
+                vig.addColorStop(0, 'rgba(0,0,0,0)');
+                vig.addColorStop(1, 'rgba(0,0,0,0.45)');
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = vig;
+                ctx.fillRect(0, 0, OUT_W, OUT_H);
               }
 
-              // ── 8. Pop word ───────────────────────────────────────
-              if (IS_JJ && jjPopAlpha > 0.05 && jjPopText) {
-                const fs = Math.round(OUT_W * 0.13 * jjPopScale);
-                ctx.save();
-                ctx.globalAlpha = Math.min(1, jjPopAlpha);
-                ctx.font        = `900 ${fs}px Arial Black, Arial, sans-serif`;
-                ctx.textAlign   = 'center';
-                ctx.textBaseline= 'middle';
-                ctx.strokeStyle = '#000';
-                ctx.lineWidth   = fs * 0.15;
-                ctx.lineJoin    = 'round';
-                const popColors = {djviralid:'#ff00b4',angklung:'#00ff88',koplo:'#ffcc00',slowjam:'#aaaaff',hard:'#ff3300'};
-                ctx.fillStyle   = popColors[JJ_STYLE] || '#ff00b4';
-                ctx.strokeText(jjPopText, OUT_W/2, OUT_H*0.38);
-                ctx.fillText(jjPopText,   OUT_W/2, OUT_H*0.38);
-                ctx.restore();
+              // Progress bar
+              const barH = Math.max(4, Math.round(OUT_H * 0.006)), barY = OUT_H - barH;
+              ctx.globalAlpha = 0.5; ctx.fillStyle = 'rgba(0,0,0,0.4)';
+              ctx.fillRect(0, barY, OUT_W, barH); ctx.globalAlpha = 1;
+              const grad = ctx.createLinearGradient(0, 0, OUT_W, 0);
+              if (IS_JJ) {
+                grad.addColorStop(0,'#ff0080'); grad.addColorStop(0.5,'#00f5ff'); grad.addColorStop(1,'#ffe600');
+              } else {
+                grad.addColorStop(0,'#7c3aed'); grad.addColorStop(0.5,'#a78bfa'); grad.addColorStop(1,'#c4b5fd');
               }
-
-              // ── 9. Progress bar ───────────────────────────────────
-              {
-                const barH = Math.max(4, Math.round(OUT_H * 0.006)), barY = OUT_H - barH;
-                ctx.globalAlpha = 0.5; ctx.fillStyle = 'rgba(0,0,0,0.4)';
-                ctx.fillRect(0, barY, OUT_W, barH); ctx.globalAlpha = 1;
-                const grad = ctx.createLinearGradient(0, 0, OUT_W, 0);
-                if (IS_JJ) {
-                  const pgColors = {djviralid:['#ff0080','#ff00ff','#00f5ff'],angklung:['#00ff88','#ffcc00','#00ccff'],koplo:['#ff3300','#ffcc00','#ff0080'],slowjam:['#6666ff','#aa66ff','#66aaff'],hard:['#ff0000','#ff8800','#ffff00']};
-                  const cols = pgColors[JJ_STYLE] || pgColors.djviralid;
-                  grad.addColorStop(0,cols[0]); grad.addColorStop(0.5,cols[1]); grad.addColorStop(1,cols[2]);
-                } else {
-                  grad.addColorStop(0,'#7c3aed'); grad.addColorStop(0.5,'#a78bfa'); grad.addColorStop(1,'#c4b5fd');
-                }
-                ctx.fillStyle = grad; ctx.fillRect(0, barY, OUT_W * progress, barH);
-              }
+              ctx.fillStyle = grad; ctx.fillRect(0, barY, OUT_W * progress, barH);
 
               // Subtitles
               if (subtitleOn && timedSubs.length > 0) {
@@ -1031,13 +887,12 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
                   const boxW = Math.min(maxW+padX*2, OUT_W*0.92), boxH = shown.length*lineH+padY*2;
                   const boxX = (OUT_W-boxW)/2, boxY = OUT_H*0.80-boxH;
                   if (IS_JJ) {
-                    // JJ style: bold outline text with style-specific color
-                    const subColors = {djviralid:'#ff00b4',angklung:'#00ff88',koplo:'#ffcc00',slowjam:'#ccccff',hard:'#ff4400'};
+                    // JJ style: no box, bold stroke text
                     ctx.globalAlpha = 1;
-                    ctx.fillStyle   = subColors[JJ_STYLE] || '#ffe600';
+                    ctx.fillStyle = '#ffe600';
                     ctx.strokeStyle = '#000';
-                    ctx.lineWidth   = fontSize * 0.14;
-                    ctx.lineJoin    = 'round';
+                    ctx.lineWidth = fontSize * 0.12;
+                    ctx.lineJoin = 'round';
                     shown.forEach((ln, i) => {
                       ctx.strokeText(ln, OUT_W/2, boxY+padY+fontSize+i*lineH);
                       ctx.fillText(ln,   OUT_W/2, boxY+padY+fontSize+i*lineH);
@@ -1061,7 +916,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             }, 400);
 
             rec.onstop = () => {
-              cancelAnimationFrame(rafHandle);
+              clearInterval(intervalHandle);
               clearInterval(progressInterval);
               if (audioCtx) try { audioCtx.close(); } catch(e){}
               cleanup();
@@ -1071,8 +926,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
             // Draw first frame before starting
             try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-            rec.start(200);
-            rafHandle = requestAnimationFrame(drawFrame);
+            rec.start(33);
+            intervalHandle = setInterval(drawFrameContent, 1000/FPS);
             video.playbackRate = 1;
             video.play().catch(e => console.warn('play() error:', e));
 
@@ -1097,6 +952,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
       video.load();
     };
     _setupVideo();
+    }; // end fr3
+    _fr3.readAsDataURL(file);
   });
 }
 
@@ -1130,123 +987,40 @@ function show(name) {
   if(name==='projects') renderProjects();
 }
 
-// ─── Format support detection ─────────────────────────────────────
-const NATIVE_TYPES = ['video/mp4','video/webm','video/ogg','video/quicktime','video/x-m4v'];
-const NATIVE_EXTS  = ['mp4','webm','ogv','ogg','mov','m4v'];
-// Formats that need FFmpeg transcode
-const NEEDS_TRANSCODE_EXTS = ['mkv','avi','flv','wmv','ts','m2ts','mts','3gp','divx','asf','rm','rmvb','vob','mpeg','mpg'];
-
-let _ffmpegInstance = null;
-let _ffmpegLoading  = false;
-
-async function getFFmpeg() {
-  if (_ffmpegInstance) return _ffmpegInstance;
-  if (_ffmpegLoading)  return null;
-  _ffmpegLoading = true;
-  try {
-    const FFmpegClass = getFFmpegClass();
-    if (!FFmpegClass) throw new Error('FFmpeg library belum dimuat');
-    const ff = new FFmpegClass();
-    ff.on('log', ({ message }) => console.log('[ffmpeg]', message));
-    await ff.load({
-      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-      wasmURL:  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-    });
-    _ffmpegInstance = ff;
-    return ff;
-  } catch(e) {
-    console.error('FFmpeg load failed:', e);
-    _ffmpegLoading = false;
-    return null;
-  }
+function dropFile(e) {
+  e.preventDefault();
+  document.getElementById('dropzone').style.borderColor='rgba(167,139,250,0.2)';
+  const f = e.dataTransfer.files[0];
+  if(f && f.type.startsWith('video/')) handleFile(f);
+  else toast('Harap upload file video!');
 }
 
-async function transcodeToMp4(file, onProgress) {
-  const ff = await getFFmpeg();
-  if (!ff) throw new Error('FFmpeg tidak tersedia — pastikan koneksi internet aktif');
-  const fetchFile = getFetchFile();
-  const inName  = 'input.' + file.name.split('.').pop().toLowerCase();
-  const outName = 'output.mp4';
-  onProgress && onProgress(5, 'Memuat FFmpeg...');
-  await ff.writeFile(inName, await fetchFile(file));
-  onProgress && onProgress(15, 'Mengkonversi format video...');
-  ff.on('progress', ({ progress }) => {
-    if (onProgress) onProgress(15 + Math.round(progress * 70), `Konversi: ${Math.round(progress * 100)}%`);
-  });
-  await ff.exec([
-    '-i', inName,
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-    '-c:a', 'aac', '-b:a', '128k',
-    '-movflags', '+faststart',
-    '-y', outName
-  ]);
-  const data = await ff.readFile(outName);
-  await ff.deleteFile(inName);
-  await ff.deleteFile(outName);
-  return new File([data.buffer], file.name.replace(/\.[^.]+$/, '.mp4'), { type: 'video/mp4' });
-}
+function handleFile(f) {
+  if(!f) return;
 
-async function handleFile(f) {
-  if (!f) return;
-  const ext = f.name.split('.').pop().toLowerCase();
-  const needsTranscode = NEEDS_TRANSCODE_EXTS.includes(ext);
-
-  // Quick native-play check
+  // Cek apakah browser bisa play format ini
   const testVid = document.createElement('video');
-  const canPlayNative = testVid.canPlayType(f.type) !== '' || NATIVE_EXTS.includes(ext);
-
-  const dz = document.getElementById('dropzone');
-
-  if (!canPlayNative && !needsTranscode) {
-    toast(`❌ Format ".${ext}" tidak dikenal.`);
-    return;
-  }
-
-  if (needsTranscode) {
-    // Show transcode UI
-    if (dz) dz.innerHTML = `
-      <div style="font-size:28px;margin-bottom:8px">⚙️</div>
-      <div style="font-size:14px;color:#c4b5fd;font-weight:600;margin-bottom:6px">Mengkonversi ${ext.toUpperCase()} → MP4...</div>
-      <div id="transcodeBar" style="background:rgba(255,255,255,0.08);border-radius:6px;height:6px;width:100%;margin:8px 0">
-        <div id="transcodeFill" style="background:#7c3aed;height:6px;border-radius:6px;width:5%;transition:width 0.3s"></div>
-      </div>
-      <div id="transcodeLabel" style="font-size:11px;color:rgba(240,237,232,0.4)">Memuat FFmpeg WASM...</div>
-    `;
-
-    const updateBar = (pct, label) => {
-      const fill = document.getElementById('transcodeFill');
-      const lbl  = document.getElementById('transcodeLabel');
-      if (fill) fill.style.width = pct + '%';
-      if (lbl)  lbl.textContent  = label;
-    };
-
-    try {
-      const converted = await transcodeToMp4(f, updateBar);
-      updateBar(100, '✅ Konversi selesai!');
-      f = converted; // use the converted file
-    } catch(e) {
-      if (dz) dz.innerHTML = `<div style="color:#f87171;font-size:13px">❌ Konversi gagal: ${e.message}<br><span style="font-size:11px;color:rgba(240,237,232,0.4)">Coba konversi manual ke MP4 H.264 dulu.</span></div>`;
+  const canPlay = testVid.canPlayType(f.type);
+  if (f.type && canPlay === '') {
+    // Coba tetap lanjut kalau ekstensi umum (browser kadang salah report)
+    const ext = f.name.split('.').pop().toLowerCase();
+    if (!['mp4','webm','mov','avi','mkv','m4v'].includes(ext)) {
+      toast(`❌ Format "${f.type}" tidak didukung browser. Gunakan MP4 H.264.`);
       return;
     }
   }
 
   _videoFile = f;
-  _videoExt  = f.name.split('.').pop().toLowerCase() || 'mp4';
+  _videoExt = f.name.split('.').pop().toLowerCase() || 'mp4';
+  // Tampilkan preview thumbnail di dropzone
   const bUrl = URL.createObjectURL(f);
+  const dz = document.getElementById('dropzone');
   if (dz) {
     dz.innerHTML = `<video src="${bUrl}" style="width:100%;max-height:120px;border-radius:8px;object-fit:contain" muted playsinline preload="metadata"></video>
     <div style="font-size:12px;color:rgba(240,237,232,0.6);margin-top:6px">✅ ${f.name} · ${(f.size/1024/1024).toFixed(1)} MB</div>
     <div style="font-size:11px;color:rgba(240,237,232,0.35);margin-top:4px">Klik Proses → untuk mulai analisis AI</div>`;
   }
   beginProcess({name:f.name, source:'upload', meta:`${(f.size/1024/1024).toFixed(1)} MB · ${f.type||'video'}`, thumb:'📁', hasFile: true});
-}
-
-function dropFile(e) {
-  e.preventDefault();
-  document.getElementById('dropzone').style.borderColor='rgba(167,139,250,0.2)';
-  const f = e.dataTransfer.files[0];
-  if (f) handleFile(f);
-  else toast('Harap drop file video!');
 }
 
 function startProcess() {
@@ -1578,166 +1352,117 @@ function loadProject(i) {
   document.getElementById('noFileBanner').textContent='ℹ Untuk unduh MP4, kembali dan upload ulang file video.';
 }
 
-// ─── Musik JJ — Viral Indonesia Style ────────────────────────────
+// ─── Musik JJ ─────────────────────────────────────────────────────
 const JJ_TRACKS = [
   {
-    id:'dj_viral', name:'DJ Viral 2025', genre:'DJ Remix 🔥', bpm:138,
-    desc:'Drop keras ala DJ TikTok Indonesia — paling viral',
-    url: null, synthStyle: 'djviralid'
+    id:'phonk1', name:'Phonk Drive', genre:'Phonk 🔥', bpm:140,
+    desc:'Bass berat, beat aggressive — cocok action & sport',
+    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Volatile%20Reaction.mp3'
   },
   {
-    id:'angklung', name:'Angklung Trap', genre:'Etnik Trap 🎋', bpm:130,
-    desc:'Angklung + 808 bass — aesthetic Indonesia banget',
-    url: null, synthStyle: 'angklung'
+    id:'edm1', name:'Epic Energy', genre:'EDM ⚡', bpm:128,
+    desc:'Build-up & drop keras, cocok montage viral',
+    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Scheming%20Weasel%20faster%20slower.mp3'
   },
   {
-    id:'koplo', name:'Koplo Jedag', genre:'Koplo ⚡', bpm:145,
-    desc:'Bass koplo + snare keras — Jawa viral style',
-    url: null, synthStyle: 'koplo'
+    id:'hiphop1', name:'Trap Banger', genre:'Trap 🎤', bpm:140,
+    desc:'Hi-hat cepat, bass 808 — viral TikTok style',
+    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Inspired.mp3'
   },
   {
-    id:'slowjam', name:'Slow Reverb Viral', genre:'Slow Jam 🌙', bpm:85,
-    desc:'Lo-fi reverb sad — trending Reels & TikTok sad story',
-    url: null, synthStyle: 'slowjam'
+    id:'cinematic1', name:'Rise Up', genre:'Cinematic 🎬', bpm:120,
+    desc:'Orkestra dramatis, cocok momen epic & inspiratif',
+    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Strength%20of%20the%20Titans.mp3'
   },
   {
-    id:'hardremix', name:'Hard Remix Cut', genre:'Hard EDM 💥', bpm:150,
-    desc:'Bass distorsi + cut beat — paling jedag jedug',
-    url: null, synthStyle: 'hard'
+    id:'synth1', name:'Beat Generator', genre:'Synth 🤖', bpm:130,
+    desc:'Beat elektronik otomatis — selalu jalan offline',
+    url: null // synthetic — pakai Web Audio API
   },
 ];
 
 let _selectedTrack = JJ_TRACKS[0];
 let _musikAudioEl  = null;
 
-// ── Synthetic Beat Generator — Multi-Style Viral Indonesia ──────────
-function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style) {
-  const sr    = audioCtx.sampleRate;
-  const total = Math.ceil(sr * durationSec);
-  const buf   = audioCtx.createBuffer(2, total, sr);
-  const L     = buf.getChannelData(0);
-  const R     = buf.getChannelData(1);
-  const beat  = 60 / bpm;
+// ── Synthetic Beat Generator (Web Audio) ──────────────────────────
+// Dipakai kalau URL musik gagal load (offline / CORS)
+function createSyntheticBeatBuffer(audioCtx, durationSec, bpm) {
+  const sampleRate  = audioCtx.sampleRate;
+  const totalFrames = Math.ceil(sampleRate * durationSec);
+  const buffer      = audioCtx.createBuffer(2, totalFrames, sampleRate);
+  const beatSec     = 60 / bpm;
+  const L = buffer.getChannelData(0);
+  const R = buffer.getChannelData(1);
 
-  const sine  = (f, t) => Math.sin(2 * Math.PI * f * t);
-  const noise = ()     => Math.random() * 2 - 1;
-  const write = (ch, pos, val) => { if (pos < total) { ch[pos] = Math.max(-1, Math.min(1, ch[pos] + val)); } };
-  const writeRange = (start, len, fn) => { for (let i = 0; i < len && start+i < total; i++) { const v = fn(i/sr, i); write(L, start+i, v); write(R, start+i, v); } };
+  for (let beat = 0; beat * beatSec < durationSec; beat++) {
+    const beatStart = Math.floor(beat * beatSec * sampleRate);
+    const isDownbeat = beat % 4 === 0;
+    const isSnare    = beat % 4 === 2;
 
-  const numBeats = Math.ceil(durationSec / beat) + 2;
-
-  for (let b = 0; b < numBeats; b++) {
-    const bs  = Math.floor(b * beat * sr); // beat start sample
-    const hs  = Math.floor((b + 0.5) * beat * sr); // half-beat
-    const q1s = Math.floor((b + 0.25) * beat * sr);
-    const q3s = Math.floor((b + 0.75) * beat * sr);
-    const dn  = b % 4 === 0; // downbeat
-    const sn  = b % 4 === 2; // snare beat
-
-    if (style === 'djviralid') {
-      // ── Kick: punchy 808 style ──
-      if (b % 2 === 0) writeRange(bs, Math.floor(sr*0.18), (t) => sine(55*Math.exp(-t*18), t)*Math.exp(-t*22)*1.1);
-      // ── Snare clap ──
-      if (sn) writeRange(bs, Math.floor(sr*0.08), (t) => (noise()*0.6 + sine(200,t)*0.3)*Math.exp(-t*35));
-      // ── Hi-hat 16th ──
-      for (let k = 0; k < 4; k++) {
-        const hs16 = Math.floor((b + k*0.25) * beat * sr);
-        writeRange(hs16, Math.floor(sr*0.025), (t) => noise()*Math.exp(-t*120)*0.3);
+    // Kick drum — low thump
+    if (isDownbeat || beat % 2 === 0) {
+      const kickLen = Math.floor(sampleRate * 0.15);
+      for (let i = 0; i < kickLen && beatStart + i < totalFrames; i++) {
+        const t   = i / sampleRate;
+        const env = Math.exp(-t * 30);
+        const freq= 60 * Math.exp(-t * 20);
+        const val = Math.sin(2 * Math.PI * freq * t) * env * 0.9;
+        L[beatStart + i] += val;
+        R[beatStart + i] += val;
       }
-      // ── Bass 808 glide downbeat ──
-      if (dn) {
-        const bassNotes = [55, 49, 52, 41];
-        const f0 = bassNotes[(b/4)%4];
-        writeRange(bs, Math.floor(sr*0.55), (t) => (sine(f0,t)*0.7 + sine(f0*2,t)*0.2)*Math.exp(-t*3)*0.9);
-      }
-      // ── Synth stab offbeat ──
-      if (b % 4 === 1) writeRange(q3s, Math.floor(sr*0.06), (t) => sine(440,t)*Math.exp(-t*30)*0.5);
+    }
 
-    } else if (style === 'angklung') {
-      // ── Kick ──
-      if (b % 2 === 0) writeRange(bs, Math.floor(sr*0.12), (t) => sine(70*Math.exp(-t*15),t)*Math.exp(-t*20)*0.9);
-      // ── Snare ──
-      if (sn) writeRange(bs, Math.floor(sr*0.09), (t) => noise()*Math.exp(-t*28)*0.45);
-      // ── Angklung tones — pentatonic C D E G A ──
-      const penta = [261, 293, 329, 392, 440, 523, 587];
-      if (dn) {
-        const f = penta[b % penta.length];
-        writeRange(bs, Math.floor(sr*0.25), (t) => (sine(f,t)+sine(f*2,t)*0.3)*Math.exp(-t*8)*0.5);
+    // Snare — noise burst
+    if (isSnare) {
+      const snareLen = Math.floor(sampleRate * 0.1);
+      for (let i = 0; i < snareLen && beatStart + i < totalFrames; i++) {
+        const t   = i / sampleRate;
+        const env = Math.exp(-t * 25);
+        const val = (Math.random() * 2 - 1) * env * 0.5;
+        L[beatStart + i] += val;
+        R[beatStart + i] += val;
       }
-      if (b%2===1) {
-        const f = penta[(b+2) % penta.length];
-        writeRange(q1s, Math.floor(sr*0.15), (t) => sine(f,t)*Math.exp(-t*12)*0.35);
-      }
-      // ── Hi-hat ──
-      writeRange(hs, Math.floor(sr*0.02), (t) => noise()*Math.exp(-t*100)*0.25);
-      // ── Bass ──
-      if (dn) writeRange(bs, Math.floor(sr*0.4), (t) => sine(55,t)*Math.exp(-t*4)*0.7);
+    }
 
-    } else if (style === 'koplo') {
-      // ── Koplo: kick tiap beat, snare offbeat ──
-      writeRange(bs, Math.floor(sr*0.1), (t) => sine(60*Math.exp(-t*20),t)*Math.exp(-t*25)*1.0);
-      if (sn || b%4===1) writeRange(bs, Math.floor(sr*0.07), (t) => (noise()*0.5+sine(250,t)*0.3)*Math.exp(-t*30)*0.6);
-      // ── Kendhang pattern: tiap 1/8 ──
-      for (let k = 0; k < 2; k++) {
-        const sp = Math.floor((b + k*0.5) * beat * sr);
-        if (k===1) writeRange(sp, Math.floor(sr*0.04), (t) => noise()*Math.exp(-t*60)*0.35);
-      }
-      // ── Bass kendang ──
-      if (dn) writeRange(bs, Math.floor(sr*0.35), (t) => sine(80*Math.exp(-t*8),t)*Math.exp(-t*5)*0.8);
-      // ── Kendang tas ──
-      if (b%4===3) writeRange(q3s, Math.floor(sr*0.03), (t) => noise()*Math.exp(-t*80)*0.4);
-      // ── Keyboard riff ──
-      const koploNotes = [329, 392, 440, 523];
-      if (b%2===0) writeRange(q1s, Math.floor(sr*0.08), (t) => sine(koploNotes[b%4],t)*Math.exp(-t*20)*0.3);
+    // Hi-hat — short tick tiap half-beat
+    const hihatStart = Math.floor((beat + 0.5) * beatSec * sampleRate);
+    const hihatLen   = Math.floor(sampleRate * 0.03);
+    for (let i = 0; i < hihatLen && hihatStart + i < totalFrames; i++) {
+      const t   = i / sampleRate;
+      const env = Math.exp(-t * 80);
+      const val = (Math.random() * 2 - 1) * env * 0.25;
+      L[hihatStart + i] += val;
+      R[hihatStart + i] += val;
+    }
 
-    } else if (style === 'slowjam') {
-      // ── Soft kick ──
-      if (b%4===0||b%4===2) writeRange(bs, Math.floor(sr*0.2), (t) => sine(50*Math.exp(-t*10),t)*Math.exp(-t*12)*0.6);
-      // ── Soft snare/clap ──
-      if (sn) writeRange(bs, Math.floor(sr*0.12), (t) => noise()*Math.exp(-t*18)*0.3);
-      // ── Slow hi-hat ──
-      if (b%2===0) writeRange(hs, Math.floor(sr*0.04), (t) => noise()*Math.exp(-t*60)*0.15);
-      // ── Dreamy chord pad ──
-      const chords = [[261,329,392],[246,311,369],[220,277,349],[233,293,349]];
-      const chord  = chords[(b/4|0)%4];
-      if (dn) chord.forEach(f => writeRange(bs, Math.floor(sr*beat*0.9), (t) => sine(f,t)*0.06*(1-t/(beat*0.9))));
-      // ── Lo-fi bass ──
-      if (dn) writeRange(bs, Math.floor(sr*beat*0.8), (t) => sine(chord[0]/2,t)*Math.exp(-t*2)*0.5);
-      // ── Vinyl crackle ──
-      writeRange(bs, Math.floor(sr*0.005), (t) => noise()*0.06);
-
-    } else { // hard / default
-      // ── Distorted kick ──
-      if (b%2===0) writeRange(bs, Math.floor(sr*0.15), (t) => Math.tanh(sine(50*Math.exp(-t*22),t)*3)*Math.exp(-t*18)*1.0);
-      // ── Clap + noise ──
-      if (sn) writeRange(bs, Math.floor(sr*0.1), (t) => (noise()*0.7+sine(300,t)*0.2)*Math.exp(-t*25)*0.8);
-      // ── Aggressive hi-hat 16th ──
-      for (let k = 0; k < 4; k++) {
-        const ss = Math.floor((b+k*0.25)*beat*sr);
-        writeRange(ss, Math.floor(sr*0.018), (t) => noise()*Math.exp(-t*150)*(k%2===0?0.4:0.2));
+    // Bass synth — tiap downbeat
+    if (isDownbeat) {
+      const bassLen  = Math.floor(sampleRate * 0.4);
+      const bassFreq = [55, 55, 65, 49][Math.floor(beat / 4) % 4];
+      for (let i = 0; i < bassLen && beatStart + i < totalFrames; i++) {
+        const t   = i / sampleRate;
+        const env = Math.exp(-t * 4) * 0.6;
+        const val = (Math.sin(2 * Math.PI * bassFreq * t) + 0.3 * Math.sin(2 * Math.PI * bassFreq * 2 * t)) * env;
+        L[beatStart + i] += val;
+        R[beatStart + i] += val;
       }
-      // ── Hard bass wobble ──
-      if (dn) {
-        const bf = [41,44,37,49][(b/4|0)%4];
-        writeRange(bs, Math.floor(sr*0.5), (t) => {
-          const wobble = 1 + 0.5*Math.sin(2*Math.PI*8*t);
-          return Math.tanh(sine(bf*wobble,t)*2)*Math.exp(-t*2)*0.8;
-        });
-      }
-      // ── Synth lead ──
-      if (b%4===2) writeRange(q1s, Math.floor(sr*0.07), (t) => sine(880,t)*Math.exp(-t*25)*0.4);
     }
   }
 
-  // Soft limiter
-  for (let i = 0; i < total; i++) { L[i] = Math.tanh(L[i]*0.95); R[i] = Math.tanh(R[i]*0.95); }
-  return buf;
+  // Normalize
+  for (let i = 0; i < totalFrames; i++) {
+    L[i] = Math.max(-1, Math.min(1, L[i]));
+    R[i] = Math.max(-1, Math.min(1, R[i]));
+  }
+  return buffer;
 }
 
 async function loadTrackBuffer(audioCtx, track, durationSec) {
+  // Track synthetic — langsung generate
   if (!track.url) {
-    return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm, track.synthStyle || 'hard');
+    return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm);
   }
+  // Coba fetch URL
   try {
     const resp = await fetch(track.url, { mode: 'cors' });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -1745,7 +1470,7 @@ async function loadTrackBuffer(audioCtx, track, durationSec) {
     return await audioCtx.decodeAudioData(arrayBuf);
   } catch(e) {
     console.warn('Musik URL gagal, pakai synthetic beat:', e.message);
-    return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm, track.synthStyle || 'hard');
+    return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm);
   }
 }
 

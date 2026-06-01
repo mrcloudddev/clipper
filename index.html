@@ -1349,6 +1349,21 @@ const JJ_TRACKS = [
     url: null, style:'jd'
   },
   {
+    id:'koplo', name:'Dangdut Koplo', genre:'Koplo 🥁', bpm:132,
+    desc:'Kendang koplo + bass kendhang — goyang nonstop',
+    url: null, style:'koplo'
+  },
+  {
+    id:'breakbeat', name:'Breakbeat Hardstyle', genre:'Breakbeat ⚡', bpm:155,
+    desc:'Break pattern sincopasi + kick distorsi keras',
+    url: null, style:'breakbeat'
+  },
+  {
+    id:'bassbrutal', name:'Bass Brutal 808', genre:'Bass Brutal 💥', bpm:142,
+    desc:'Sub bass muter + reese bass — lantai goyang',
+    url: null, style:'bassbrutal'
+  },
+  {
     id:'phonk', name:'Phonk Dark', genre:'Phonk 🏎️', bpm:138,
     desc:'808 bass berat, hi-hat triplet, distorsi gelap',
     url: null, style:'phonk'
@@ -1592,6 +1607,99 @@ function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
         synthLead(t, heroNotes[b%8]*0.75, beatSec*3.5, 'sine');
       }
     }
+
+  } else if (style === 'koplo') {
+    // DANGDUT KOPLO — kendang cak + cuk + bass kendhang, goyang nonstop
+    const bassNotes  = [73.4,73.4,82.4,98,73.4,65.4,77.8,82.4];
+    const melodiNote = [196,220,246.9,261.6,220,196,246.9,293.7];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%4;
+      // Kick utama (kendang bass) — jatuh di 1 dan 3 dengan variasi
+      kick(t, 120, 20, 60);
+      if (bi===2) kick(t, 115, 22, 58);
+      // Kendang cak — snare tipis cepat (koplo signature)
+      if (bi===1) { snare(t, 30, 0.45); snare(t+beatSec*0.5, 30, 0.3); }
+      if (bi===3) { snare(t, 30, 0.45); snare(t+beatSec*0.25, 28, 0.25); snare(t+beatSec*0.75, 28, 0.25); }
+      // Double kick — ciri khas koplo
+      kick(t+beatSec*0.5, 110, 25, 55);
+      if (bar4>=2) kick(t+beatSec*0.25, 105, 28, 50);
+      // Hi-hat rapat (16th note penuh koplo)
+      for (let s=0; s<4; s++) hihat(t+s*beatSec/4, false, s===0?0.28:0.18);
+      if (bar4>=2) for (let s=0; s<8; s++) hihat(t+s*beatSec/8, false, 0.12);
+      // Bass kendhang (khas koplo — bergerak cepat)
+      bass808(t, bassNotes[b%8], beatSec*0.55);
+      bass808(t+beatSec*0.5, bassNotes[(b+2)%8]*0.75, beatSec*0.45);
+      // Melodi singkat (suling/keyboard dangdut)
+      if (bi===0) synthLead(t, melodiNote[b%8], 0.09, 'sine');
+      if (bi===2) synthLead(t+beatSec*0.5, melodiNote[(b+3)%8], 0.07, 'sine');
+      // Brass gong simulasi
+      if (bi===0&&bar4===0) brass(t, melodiNote[b%8]*0.5, 0.25);
+    }
+
+  } else if (style === 'breakbeat') {
+    // BREAKBEAT HARDSTYLE — break sincopasi + kick distorsi keras + reverse snare
+    const bassFreqs = [55,55,65.4,73.4,55,49,61.7,65.4];
+    const leadFreqs = [220,246.9,261.6,293.7,329.6,246.9,220,196];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%4;
+      const isBreak = bar4===2||bar4===3;
+      // Hardstyle kick — distorsi keras, pitch sangat rendah
+      kick(t, 55, 12, 28);
+      if (!isBreak) kick(t+beatSec*0.5, 50, 15, 25);
+      // Break snare pattern (sincopasi — tidak di downbeat)
+      if (isBreak) {
+        snare(t+beatSec*0.25, 22, 0.7);
+        snare(t+beatSec*0.75, 22, 0.55);
+        if (bi%2===0) snare(t+beatSec*0.125, 28, 0.3);
+      } else {
+        if (bi===1||bi===3) snare(t, 18, 0.75);
+      }
+      // Hi-hat agresif
+      for (let s=0; s<4; s++) hihat(t+s*beatSec/4, s%2===1&&!isBreak, 0.2);
+      if (isBreak) for (let s=0; s<8; s++) hihat(t+s*beatSec/8, false, 0.15);
+      // Riser sebelum drop
+      if (bar4===1&&bi===3) riser(t, beatSec);
+      // Reese bass (breakbeat signature — bass berlapis)
+      bass808(t, bassFreqs[b%8], beatSec*0.8, false);
+      bass808(t, bassFreqs[b%8]*1.01, beatSec*0.8, false); // slight detune untuk reese
+      // Synth lead arp keras
+      synthLead(t, leadFreqs[b%8], 0.1, 'saw');
+      if (bi===1||bi===3) synthLead(t+beatSec*0.5, leadFreqs[(b+2)%8]*2, 0.06, 'square');
+      // Clap accent
+      if (bi===1||bi===3) clap(t);
+    }
+
+  } else if (style === 'bassbrutal') {
+    // BASS BRUTAL 808 — sub bass muter, reese bass, lantai goyang
+    const subNotes  = [41.2,41.2,43.7,55,41.2,36.7,43.7,49];
+    const midNotes  = [82.4,82.4,87.3,110,82.4,73.4,87.3,98];
+    const highNotes = [164.8,185,196,220,164.8,155.6,174.6,196];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%4;
+      // Kick super berat
+      kick(t, 45, 10, 22);
+      if (bi===2) kick(t, 43, 11, 20);
+      kick(t+beatSec*0.5, 40, 14, 18); // offbeat kick brutal
+      // Snare/clap combo
+      if (bi===1||bi===3) { snare(t, 16, 0.8); clap(t+0.008); }
+      if (bi===3) snare(t+beatSec*0.75, 25, 0.35); // ghost snare
+      // Hi-hat minimal tapi keras
+      hihat(t, false, 0.35);
+      hihat(t+beatSec*0.5, true, 0.25);
+      if (bar4>=2) { hihat(t+beatSec*0.25, false, 0.2); hihat(t+beatSec*0.75, false, 0.2); }
+      // BASS BRUTAL — 3 layer: sub, mid, high pitch untuk saturasi penuh
+      bass808(t, subNotes[b%8],  beatSec*1.2, b%4===0); // sub bass lama + slide
+      bass808(t, midNotes[b%8],  beatSec*0.7, false);   // mid bass
+      if (bar4>=2) bass808(t+beatSec*0.5, subNotes[(b+4)%8]*0.5, beatSec*0.6, true); // extra sub
+      // Reese bass grit (sepasang detune)
+      const rf = highNotes[b%8];
+      bass808(t, rf,      beatSec*0.35, false);
+      bass808(t, rf*1.02, beatSec*0.35, false); // detuned untuk reese
+      // Riser tiap 4 bar
+      if (bar4===3&&bi===3) riser(t, beatSec);
+      // Synth pluck accent
+      if (bi===0) synthLead(t+beatSec*0.25, highNotes[b%8]*2, 0.05, 'square');
+    }
   }
 
   // Hard limiter
@@ -1608,11 +1716,14 @@ function renderMusikList() {
   const wrap = document.getElementById('musikList');
   if (!wrap) return;
   const styleColors = {
-    jd:        { border:'rgba(255,230,0,0.5)',  bg:'rgba(255,230,0,0.07)',   text:'#ffe600' },
-    phonk:     { border:'rgba(136,0,255,0.5)',  bg:'rgba(136,0,255,0.08)',   text:'#cc44ff' },
-    hype:      { border:'rgba(0,245,255,0.5)',  bg:'rgba(0,245,255,0.07)',   text:'#00f5ff' },
-    trap:      { border:'rgba(255,102,0,0.5)',  bg:'rgba(255,102,0,0.07)',   text:'#ff8833' },
-    cinematic: { border:'rgba(255,215,0,0.5)',  bg:'rgba(255,215,0,0.07)',   text:'#ffd700' },
+    jd:         { border:'rgba(255,230,0,0.5)',  bg:'rgba(255,230,0,0.07)',   text:'#ffe600' },
+    koplo:      { border:'rgba(255,120,0,0.5)',  bg:'rgba(255,120,0,0.07)',   text:'#ff9800' },
+    breakbeat:  { border:'rgba(0,220,255,0.5)',  bg:'rgba(0,220,255,0.07)',   text:'#00dcff' },
+    bassbrutal: { border:'rgba(200,0,255,0.5)',  bg:'rgba(200,0,255,0.07)',   text:'#c800ff' },
+    phonk:      { border:'rgba(136,0,255,0.5)',  bg:'rgba(136,0,255,0.08)',   text:'#cc44ff' },
+    hype:       { border:'rgba(0,245,255,0.5)',  bg:'rgba(0,245,255,0.07)',   text:'#00f5ff' },
+    trap:       { border:'rgba(255,102,0,0.5)',  bg:'rgba(255,102,0,0.07)',   text:'#ff8833' },
+    cinematic:  { border:'rgba(255,215,0,0.5)',  bg:'rgba(255,215,0,0.07)',   text:'#ffd700' },
   };
   wrap.innerHTML = JJ_TRACKS.map(t => {
     const on  = _selectedTrack.id === t.id;

@@ -2021,6 +2021,9 @@ function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
         bass808(t+beatSec*0.5, bounceSeq[b%8]*0.35, beatSec*0.8, true);
       }
     }
+  }
+
+  // Hard limiter
   for (let i=0;i<frames;i++){L[i]=Math.tanh(L[i]*0.75)*0.92;R[i]=Math.tanh(R[i]*0.75)*0.92;}
   return buf;
 }

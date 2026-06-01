@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KlipAI — Potong Klip Viral Otomatis</title>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
 </head>
 <body>
 <style>
@@ -61,8 +63,8 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
     <label id="dropzone" for="fInput" ondragover="event.preventDefault();this.style.borderColor='rgba(167,139,250,0.6)'" ondragleave="this.style.borderColor='rgba(167,139,250,0.2)'" ondrop="dropFile(event)" style="display:block;border:1.5px dashed rgba(167,139,250,0.2);border-radius:12px;padding:24px;text-align:center;cursor:pointer">
       <div style="font-size:22px;color:rgba(167,139,250,0.5);margin-bottom:6px">⬆</div>
       <div style="font-size:14px;color:rgba(240,237,232,0.65);font-weight:500">Klik atau seret video ke sini</div>
-      <div style="font-size:12px;color:rgba(240,237,232,0.3);margin-top:4px">MP4, MOV, AVI · Maks 2GB · <span style="color:#86efac">✓ Unduh MP4 nyata</span></div>
-      <input type="file" id="fInput" accept="video/*" style="display:none" onchange="handleFile(this.files[0])"/>
+      <div style="font-size:12px;color:rgba(240,237,232,0.3);margin-top:4px">MP4, MOV, MKV, AVI, FLV, WMV, TS, 3GP · Maks 4GB · <span style="color:#86efac">✓ Semua format didukung</span></div>
+      <input type="file" id="fInput" accept="video/*,.mkv,.avi,.flv,.wmv,.ts,.m2ts,.3gp,.divx" style="display:none" onchange="handleFile(this.files[0])"/>
     </label>
   </div>
 
@@ -283,6 +285,20 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
 </div>
 
 <script>
+// FFmpeg.wasm — lazy getters (CDN loads async, avoid TDZ)
+function getFFmpegClass() {
+  if (window.FFmpegWASM && window.FFmpegWASM.FFmpeg) return window.FFmpegWASM.FFmpeg;
+  if (window.FFmpeg && window.FFmpeg.FFmpeg) return window.FFmpeg.FFmpeg;
+  if (window.FFmpeg && typeof window.FFmpeg === 'function') return window.FFmpeg;
+  return null;
+}
+function getFetchFile() {
+  if (window.FFmpegUtil && window.FFmpegUtil.fetchFile) return window.FFmpegUtil.fetchFile;
+  if (window.FFmpegWASM && window.FFmpegWASM.fetchFile) return window.FFmpegWASM.fetchFile;
+  // Fallback: manual arrayBuffer read
+  return async (f) => new Uint8Array(await f.arrayBuffer());
+}
+
 const CATS = [
   {label:'Edukasi AI',    badge:'HOT', bColor:'rgba(239,68,68,0.2)',   bText:'#f87171'},
   {label:'Sejarah AI',   badge:'NEW', bColor:'rgba(59,130,246,0.2)',  bText:'#60a5fa'},
@@ -671,7 +687,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
       video.muted = true;
       video.preload = 'auto';
       video.playsInline = true;
-      video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:2px;height:2px;top:-9999px;left:-9999px';
+      video.crossOrigin = 'anonymous';
+      video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:320px;height:240px;top:-9999px;left:-9999px';
       document.body.appendChild(video);
 
       const cleanup = () => {
@@ -679,7 +696,13 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         if (_blobUrl) { URL.revokeObjectURL(_blobUrl); _blobUrl = null; }
       };
 
-      const onErr = () => { cleanup(); reject(new Error('Gagal memutar file video — pastikan format MP4/MOV/AVI')); };
+      const onErr = (e) => {
+        const code = video.error ? video.error.code : '?';
+        const msgs = {1:'Proses dibatalkan',2:'Error jaringan',3:'Decode gagal — file mungkin corrupt',4:'Format tidak bisa diplay browser langsung'};
+        const detail = msgs[code] || ('Kode error: ' + code);
+        cleanup();
+        reject(new Error('Gagal baca video: ' + detail));
+      };
       video.onerror = onErr;
 
       const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout membaca video')); }, 30000);
@@ -979,19 +1002,123 @@ function show(name) {
   if(name==='projects') renderProjects();
 }
 
+// ─── Format support detection ─────────────────────────────────────
+const NATIVE_TYPES = ['video/mp4','video/webm','video/ogg','video/quicktime','video/x-m4v'];
+const NATIVE_EXTS  = ['mp4','webm','ogv','ogg','mov','m4v'];
+// Formats that need FFmpeg transcode
+const NEEDS_TRANSCODE_EXTS = ['mkv','avi','flv','wmv','ts','m2ts','mts','3gp','divx','asf','rm','rmvb','vob','mpeg','mpg'];
+
+let _ffmpegInstance = null;
+let _ffmpegLoading  = false;
+
+async function getFFmpeg() {
+  if (_ffmpegInstance) return _ffmpegInstance;
+  if (_ffmpegLoading)  return null;
+  _ffmpegLoading = true;
+  try {
+    const FFmpegClass = getFFmpegClass();
+    if (!FFmpegClass) throw new Error('FFmpeg library belum dimuat');
+    const ff = new FFmpegClass();
+    ff.on('log', ({ message }) => console.log('[ffmpeg]', message));
+    await ff.load({
+      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+      wasmURL:  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+    });
+    _ffmpegInstance = ff;
+    return ff;
+  } catch(e) {
+    console.error('FFmpeg load failed:', e);
+    _ffmpegLoading = false;
+    return null;
+  }
+}
+
+async function transcodeToMp4(file, onProgress) {
+  const ff = await getFFmpeg();
+  if (!ff) throw new Error('FFmpeg tidak tersedia — pastikan koneksi internet aktif');
+  const fetchFile = getFetchFile();
+  const inName  = 'input.' + file.name.split('.').pop().toLowerCase();
+  const outName = 'output.mp4';
+  onProgress && onProgress(5, 'Memuat FFmpeg...');
+  await ff.writeFile(inName, await fetchFile(file));
+  onProgress && onProgress(15, 'Mengkonversi format video...');
+  ff.on('progress', ({ progress }) => {
+    if (onProgress) onProgress(15 + Math.round(progress * 70), `Konversi: ${Math.round(progress * 100)}%`);
+  });
+  await ff.exec([
+    '-i', inName,
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+    '-c:a', 'aac', '-b:a', '128k',
+    '-movflags', '+faststart',
+    '-y', outName
+  ]);
+  const data = await ff.readFile(outName);
+  await ff.deleteFile(inName);
+  await ff.deleteFile(outName);
+  return new File([data.buffer], file.name.replace(/\.[^.]+$/, '.mp4'), { type: 'video/mp4' });
+}
+
+async function handleFile(f) {
+  if (!f) return;
+  const ext = f.name.split('.').pop().toLowerCase();
+  const needsTranscode = NEEDS_TRANSCODE_EXTS.includes(ext);
+
+  // Quick native-play check
+  const testVid = document.createElement('video');
+  const canPlayNative = testVid.canPlayType(f.type) !== '' || NATIVE_EXTS.includes(ext);
+
+  const dz = document.getElementById('dropzone');
+
+  if (!canPlayNative && !needsTranscode) {
+    toast(`❌ Format ".${ext}" tidak dikenal.`);
+    return;
+  }
+
+  if (needsTranscode) {
+    // Show transcode UI
+    if (dz) dz.innerHTML = `
+      <div style="font-size:28px;margin-bottom:8px">⚙️</div>
+      <div style="font-size:14px;color:#c4b5fd;font-weight:600;margin-bottom:6px">Mengkonversi ${ext.toUpperCase()} → MP4...</div>
+      <div id="transcodeBar" style="background:rgba(255,255,255,0.08);border-radius:6px;height:6px;width:100%;margin:8px 0">
+        <div id="transcodeFill" style="background:#7c3aed;height:6px;border-radius:6px;width:5%;transition:width 0.3s"></div>
+      </div>
+      <div id="transcodeLabel" style="font-size:11px;color:rgba(240,237,232,0.4)">Memuat FFmpeg WASM...</div>
+    `;
+
+    const updateBar = (pct, label) => {
+      const fill = document.getElementById('transcodeFill');
+      const lbl  = document.getElementById('transcodeLabel');
+      if (fill) fill.style.width = pct + '%';
+      if (lbl)  lbl.textContent  = label;
+    };
+
+    try {
+      const converted = await transcodeToMp4(f, updateBar);
+      updateBar(100, '✅ Konversi selesai!');
+      f = converted; // use the converted file
+    } catch(e) {
+      if (dz) dz.innerHTML = `<div style="color:#f87171;font-size:13px">❌ Konversi gagal: ${e.message}<br><span style="font-size:11px;color:rgba(240,237,232,0.4)">Coba konversi manual ke MP4 H.264 dulu.</span></div>`;
+      return;
+    }
+  }
+
+  _videoFile = f;
+  _videoExt  = f.name.split('.').pop().toLowerCase() || 'mp4';
+  const bUrl = URL.createObjectURL(f);
+  if (dz) {
+    dz.innerHTML = `<video src="${bUrl}" style="width:100%;max-height:120px;border-radius:8px;object-fit:contain" muted playsinline preload="metadata"></video>
+    <div style="font-size:12px;color:rgba(240,237,232,0.6);margin-top:6px">✅ ${f.name} · ${(f.size/1024/1024).toFixed(1)} MB</div>
+    <div style="font-size:11px;color:rgba(240,237,232,0.35);margin-top:4px">Klik Proses → untuk mulai analisis AI</div>`;
+  }
+  beginProcess({name:f.name, source:'upload', meta:`${(f.size/1024/1024).toFixed(1)} MB · ${f.type||'video'}`, thumb:'📁', hasFile: true});
+}
+
 function dropFile(e) {
   e.preventDefault();
   document.getElementById('dropzone').style.borderColor='rgba(167,139,250,0.2)';
   const f = e.dataTransfer.files[0];
-  if(f && f.type.startsWith('video/')) handleFile(f);
-  else toast('Harap upload file video!');
-}
-
-function handleFile(f) {
-  if(!f) return;
-  _videoFile = f;
-  _videoExt = f.name.split('.').pop().toLowerCase() || 'mp4';
-  beginProcess({name:f.name, source:'upload', meta:`${(f.size/1024/1024).toFixed(1)} MB · ${f.type}`, thumb:'📁', hasFile: true});
+  if (f) handleFile(f);
+  else toast('Harap drop file video!');
 }
 
 function startProcess() {

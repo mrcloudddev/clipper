@@ -88,7 +88,6 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
 
     <!-- MUSIK SELECTOR — muncul kalau JJ aktif -->
     <div id="musikWrap" style="display:none;margin-top:14px">
-      <div style="display:flex;flex-direction:column;gap:6px" id="musikList"></div>
 
       <!-- UPLOAD MUSIK SENDIRI -->
       <div style="margin-top:10px;border-top:0.5px solid rgba(255,255,255,0.06);padding-top:10px">
@@ -2827,39 +2826,7 @@ function clearCustomMusik() {
 }
 
 function renderMusikList() {
-  const wrap = document.getElementById('musikList');
-  if (!wrap) return;
-  const styleColors = {
-    jd:         { border:'rgba(255,230,0,0.5)',  bg:'rgba(255,230,0,0.07)',   text:'#ffe600' },
-    slowbass:   { border:'rgba(0,200,255,0.5)',  bg:'rgba(0,200,255,0.06)',   text:'#00c8ff' },
-    indobounce: { border:'rgba(255,40,120,0.5)', bg:'rgba(255,40,120,0.07)',  text:'#ff2878' },
-    koplo:      { border:'rgba(255,120,0,0.5)',  bg:'rgba(255,120,0,0.07)',   text:'#ff9800' },
-    breakbeat:  { border:'rgba(0,220,255,0.5)',  bg:'rgba(0,220,255,0.07)',   text:'#00dcff' },
-    bassbrutal: { border:'rgba(200,0,255,0.5)',  bg:'rgba(200,0,255,0.07)',   text:'#c800ff' },
-    phonk:      { border:'rgba(136,0,255,0.5)',  bg:'rgba(136,0,255,0.08)',   text:'#cc44ff' },
-    hype:       { border:'rgba(0,245,255,0.5)',  bg:'rgba(0,245,255,0.07)',   text:'#00f5ff' },
-    trap:       { border:'rgba(255,102,0,0.5)',  bg:'rgba(255,102,0,0.07)',   text:'#ff8833' },
-    cinematic:  { border:'rgba(255,215,0,0.5)',  bg:'rgba(255,215,0,0.07)',   text:'#ffd700' },
-  };
-  wrap.innerHTML = JJ_TRACKS.map(t => {
-    const on  = _selectedTrack.id === t.id;
-    const col = styleColors[t.style] || styleColors.jd;
-    const borderC    = on ? col.border : 'rgba(255,255,255,0.08)';
-    const bgC        = on ? col.bg     : 'rgba(255,255,255,0.03)';
-    const textC      = on ? col.text   : '#f0ede8';
-    const btnBorderC = on ? col.border : 'rgba(255,255,255,0.15)';
-    const btnBgC     = on ? col.bg     : 'rgba(255,255,255,0.06)';
-    const btnTextC   = on ? col.text   : 'rgba(240,237,232,0.5)';
-    const tid = t.id;
-    return `<div onclick="selectTrack('${tid}')" id="track-${tid}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;border:0.5px solid ${borderC};background:${bgC};cursor:pointer;transition:all 0.15s">
-      <button onclick="event.stopPropagation();previewTrack('${tid}')" id="playbtn-${tid}" style="width:34px;height:34px;border-radius:50%;border:1px solid ${btnBorderC};background:${btnBgC};color:${btnTextC};font-size:13px;flex-shrink:0">&#9654;</button>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600;color:${textC};margin-bottom:2px">${t.name} <span style="font-size:10px;opacity:0.55">${t.genre}</span></div>
-        <div style="font-size:10px;color:rgba(240,237,232,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.desc} &middot; ${t.bpm} BPM</div>
-      </div>
-      ${on ? `<div style="font-size:13px;color:${col.text}">&#10003;</div>` : ''}
-    </div>`;
-  }).join('');
+  // Daftar track disembunyikan — tidak dirender
 }
 
 function selectTrack(id) {

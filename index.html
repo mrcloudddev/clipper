@@ -775,11 +775,22 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             let lastFrameAt = 0, rafHandle = null;
 
             const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-            const JJ_BPM  = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 138;
-            const JJ_BEAT = 60 / JJ_BPM;
-            const JJ_HALF = JJ_BEAT / 2;
+            const JJ_BPM   = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 138;
+            const JJ_STYLE = (IS_JJ && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
+            const JJ_BEAT  = 60 / JJ_BPM;
+            const JJ_HALF  = JJ_BEAT / 2;
             let jjFlashAlpha=0, jjShakeX=0, jjShakeY=0, jjZoom=1.0;
             let jjLastBeat=-1, jjLastHalf=-1, jjRgbShift=0;
+
+            // Palet warna per style
+            const JJ_PALETTES = {
+              jd:        ['#ffffff','#ffe600','#00f5ff','#ff0080','#ffffff','#ffe600'],
+              phonk:     ['#8800ff','#ff0040','#220011','#aa00ff','#ff0040','#440022'],
+              hype:      ['#00f5ff','#ffffff','#00ff88','#00f5ff','#ffe600','#ffffff'],
+              trap:      ['#ff6600','#ffffff','#ff3300','#ffaa00','#ffffff','#ff6600'],
+              cinematic: ['#ffffff','#ffd700','#c0c0c0','#ffffff','#ffe066','#c0c0c0'],
+            };
+            const jjPalette = JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd;
 
             const drawFrame = (now) => {
               rafHandle = requestAnimationFrame(drawFrame);
@@ -849,8 +860,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               // ── JJ Flash overlay ──────────────────────────────────
               if (IS_JJ && jjFlashAlpha > 0.01) {
                 ctx.globalAlpha = jjFlashAlpha * 0.75;
-                const flashColors = ['#ffffff','#ffe600','#00f5ff','#ff0080','#ffffff','#00ff88'];
-                ctx.fillStyle = flashColors[jjLastBeat % flashColors.length];
+                ctx.fillStyle = jjPalette[jjLastBeat % jjPalette.length];
                 ctx.fillRect(0, 0, OUT_W, OUT_H);
                 ctx.globalAlpha = 1;
               }
@@ -878,33 +888,13 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
                 if (jjLastBeat % 2 === 0) {
                   ctx.globalAlpha = 0.12;
                   const edgeGlow = ctx.createLinearGradient(0, 0, OUT_W, OUT_H);
-                  edgeGlow.addColorStop(0, '#ffe600');
+                  edgeGlow.addColorStop(0, jjPalette[0]);
                   edgeGlow.addColorStop(0.5, 'transparent');
-                  edgeGlow.addColorStop(1, '#ff0080');
+                  edgeGlow.addColorStop(1, jjPalette[3]);
                   ctx.fillStyle = edgeGlow;
                   ctx.fillRect(0, 0, OUT_W, OUT_H);
                   ctx.globalAlpha = 1;
                 }
-              }
-
-              // ── JJ Beat Indicator (●●● top of screen) ────────
-              if (IS_JJ) {
-                const dots = 4;
-                const dotR = Math.round(OUT_W * 0.022);
-                const dotSpacing = dotR * 3;
-                const totalW = dots * dotSpacing;
-                const startX = (OUT_W - totalW) / 2 + dotSpacing/2;
-                const dotY = dotR * 2.2;
-                const curBeat = jjLastBeat % dots;
-                for (let d = 0; d < dots; d++) {
-                  const x = startX + d * dotSpacing;
-                  ctx.beginPath();
-                  ctx.arc(x, dotY, d === curBeat ? dotR * 1.4 : dotR * 0.8, 0, Math.PI*2);
-                  ctx.globalAlpha = d === curBeat ? 1 : 0.3;
-                  ctx.fillStyle = d === curBeat ? '#ffe600' : '#ffffff';
-                  ctx.fill();
-                }
-                ctx.globalAlpha = 1;
               }
 
               // Progress bar
@@ -913,7 +903,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               ctx.fillRect(0, barY, OUT_W, barH); ctx.globalAlpha = 1;
               const grad = ctx.createLinearGradient(0, 0, OUT_W, 0);
               if (IS_JJ) {
-                grad.addColorStop(0,'#ff0080'); grad.addColorStop(0.5,'#00f5ff'); grad.addColorStop(1,'#ffe600');
+                grad.addColorStop(0, jjPalette[3]); grad.addColorStop(0.5, jjPalette[0]); grad.addColorStop(1, jjPalette[1]);
               } else {
                 grad.addColorStop(0,'#7c3aed'); grad.addColorStop(0.5,'#a78bfa'); grad.addColorStop(1,'#c4b5fd');
               }
@@ -956,7 +946,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
                       ctx.strokeStyle = jjLastBeat%2===0 ? '#ff0080' : '#00f5ff';
                       ctx.strokeText(ln, OUT_W/2, y);
                       // Yellow main fill
-                      ctx.fillStyle = jjFlashAlpha > 0.3 ? '#ffffff' : '#ffe600';
+                      ctx.fillStyle = jjFlashAlpha > 0.3 ? '#ffffff' : jjPalette[1];
                       ctx.fillText(ln, OUT_W/2, y);
                     });
                   } else {
@@ -1413,173 +1403,297 @@ function loadProject(i) {
 }
 
 // ─── Musik JJ ─────────────────────────────────────────────────────
+// Semua track adalah synthetic Web Audio — tidak perlu internet, selalu beda karakter
+
 const JJ_TRACKS = [
   {
-    id:'phonk1', name:'Phonk Drive', genre:'Phonk 🔥', bpm:140,
-    desc:'Bass berat, beat aggressive — cocok action & sport',
-    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Volatile%20Reaction.mp3'
+    id:'jedagjedug', name:'Jedag Jedug Original', genre:'Jungle Dutch 🔥', bpm:140,
+    desc:'Brass stab + double kick — style viral Indonesia asli',
+    url: null, style:'jd'
   },
   {
-    id:'edm1', name:'Epic Energy', genre:'EDM ⚡', bpm:128,
-    desc:'Build-up & drop keras, cocok montage viral',
-    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Scheming%20Weasel%20faster%20slower.mp3'
+    id:'phonk', name:'Phonk Dark', genre:'Phonk 🏎️', bpm:138,
+    desc:'808 bass berat, hi-hat triplet, distorsi gelap',
+    url: null, style:'phonk'
   },
   {
-    id:'hiphop1', name:'Trap Banger', genre:'Trap 🎤', bpm:140,
-    desc:'Hi-hat cepat, bass 808 — viral TikTok style',
-    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Inspired.mp3'
+    id:'hype', name:'Hype EDM', genre:'EDM ⚡', bpm:150,
+    desc:'Build-up + drop keras, synth lead, cocok montage',
+    url: null, style:'hype'
   },
   {
-    id:'cinematic1', name:'Rise Up', genre:'Cinematic 🎬', bpm:120,
-    desc:'Orkestra dramatis, cocok momen epic & inspiratif',
-    url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Strength%20of%20the%20Titans.mp3'
+    id:'trap', name:'Trap Banger', genre:'Trap 🎤', bpm:145,
+    desc:'808 slide, hi-hat roll 32nd, bass sub dalam',
+    url: null, style:'trap'
   },
   {
-    id:'synth1', name:'Beat Generator', genre:'Synth 🤖', bpm:130,
-    desc:'Beat elektronik otomatis — selalu jalan offline',
-    url: null // synthetic — pakai Web Audio API
+    id:'cinematic', name:'Epic Cinematic', genre:'Cinematic 🎬', bpm:120,
+    desc:'Orkestra + beat, cocok momen dramatis & inspiratif',
+    url: null, style:'cinematic'
   },
 ];
 
 let _selectedTrack = JJ_TRACKS[0];
 let _musikAudioEl  = null;
 
-// ── Synthetic Beat Generator (Web Audio) ──────────────────────────
-// Dipakai kalau URL musik gagal load (offline / CORS)
-function createSyntheticBeatBuffer(audioCtx, durationSec, bpm) {
+// ── Synthetic Beat Generator — 5 karakter musik berbeda ───────────
+function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
   const sr = audioCtx.sampleRate;
   const frames = Math.ceil(sr * durationSec);
   const buf = audioCtx.createBuffer(2, frames, sr);
   const L = buf.getChannelData(0);
   const R = buf.getChannelData(1);
   const beatSec = 60 / bpm;
-  const totalBeats = Math.floor(durationSec / beatSec);
+  const totalBeats = Math.floor(durationSec / beatSec) + 1;
 
-  const writeB = (start, len, fn) => {
+  const writeB = (start, len, fnL, fnR) => {
+    fnR = fnR || fnL;
     for (let i = 0; i < len && start+i < frames; i++) {
-      const v = fn(i/sr, i/len);
-      L[start+i] += v; R[start+i] += v;
+      L[start+i] += fnL(i/sr, i/len);
+      R[start+i] += fnR(i/sr, i/len);
     }
   };
 
-  // Jungle Dutch kick
-  const kick = (t) => {
-    const s = Math.floor(t*sr), kl = Math.floor(sr*0.22);
+  // ── Shared primitives ──
+  const kick = (t, pitch=180, decay=22, sub=55) => {
+    const s = Math.floor(t*sr), kl = Math.floor(sr*0.25);
     writeB(s, kl, (ti,p) => {
-      const env = Math.exp(-ti*22);
-      const f = 180*Math.exp(-ti*28)+45;
-      const punch = p<0.04 ? Math.sin(Math.PI*p/0.04)*0.25 : 0;
-      return (Math.sin(2*Math.PI*f*ti)*env + punch)*1.1;
+      const env = Math.exp(-ti*decay);
+      const f = pitch*Math.exp(-ti*28)+42;
+      return (Math.sin(2*Math.PI*f*ti)*env + (p<0.04?Math.sin(Math.PI*p/0.04)*0.3:0))*1.1;
     });
-    writeB(s, Math.floor(sr*0.35), (ti) => Math.sin(2*Math.PI*55*ti)*Math.exp(-ti*12)*0.55);
+    writeB(s, Math.floor(sr*0.4), ti => Math.sin(2*Math.PI*sub*ti)*Math.exp(-ti*10)*0.6);
   };
 
-  // Snare with reverb
-  const snare = (t, hard=true) => {
-    const s = Math.floor(t*sr), sl = Math.floor(sr*(hard?0.18:0.12));
-    writeB(s, sl, (ti) => {
-      const env = Math.exp(-ti*(hard?18:28));
-      return ((Math.random()*2-1)*env*(hard?0.7:0.45)) + Math.sin(2*Math.PI*200*ti)*Math.exp(-ti*30)*0.3;
+  const snare = (t, decay=18, vol=0.7) => {
+    const s = Math.floor(t*sr), sl = Math.floor(sr*0.18);
+    writeB(s, sl, ti => {
+      const env = Math.exp(-ti*decay);
+      return ((Math.random()*2-1)*env*vol) + Math.sin(2*Math.PI*200*ti)*Math.exp(-ti*30)*0.3;
     });
-    writeB(s+Math.floor(sr*0.08), Math.floor(sr*0.4), (ti) => (Math.random()*2-1)*Math.exp(-ti*8)*0.12);
+    writeB(s+Math.floor(sr*0.08), Math.floor(sr*0.45), ti => (Math.random()*2-1)*Math.exp(-ti*7)*0.1);
   };
 
-  // Hi-hat
-  const hihat = (t, open=false) => {
-    const s = Math.floor(t*sr), hl = Math.floor(sr*(open?0.20:0.035));
-    writeB(s, hl, (ti) => (Math.random()*2-1)*Math.exp(-ti*(open?14:120))*0.28);
+  const hihat = (t, open=false, vol=0.28) => {
+    const s = Math.floor(t*sr), hl = Math.floor(sr*(open?0.22:0.03));
+    writeB(s, hl, ti => (Math.random()*2-1)*Math.exp(-ti*(open?12:130))*vol);
   };
 
-  // Brass stab (jedagjedug signature)
-  const brass = (t, freq=220, dur=0.12) => {
+  const brass = (t, freq=220, dur=0.13) => {
     const s = Math.floor(t*sr), bl = Math.floor(sr*dur);
     writeB(s, bl, (ti,p) => {
-      const env = p<0.05?p/0.05:Math.exp(-(p-0.05)*14);
-      return (Math.sin(2*Math.PI*freq*ti)+Math.sin(2*Math.PI*freq*2*ti)*0.5+Math.sin(2*Math.PI*freq*3*ti)*0.25)*env*0.32;
+      const env = p<0.05?p/0.05:Math.exp(-(p-0.05)*12);
+      return (Math.sin(2*Math.PI*freq*ti) + Math.sin(2*Math.PI*freq*2*ti)*0.5 + Math.sin(2*Math.PI*freq*3*ti)*0.25)*env*0.35;
     });
   };
 
-  // Funky distorted bass
-  const bass = (t, freq, dur=0.18) => {
+  const bass808 = (t, freq, dur=0.22, slide=false) => {
     const s = Math.floor(t*sr), bl = Math.floor(sr*dur);
     writeB(s, bl, (ti,p) => {
-      const env = p<0.02?p/0.02:Math.exp(-(p-0.02)*8);
-      return Math.tanh(((freq*ti%1)*2-1)*2.5)*0.5*env;
+      const env = p<0.01?p/0.01:Math.exp(-(p-0.01)*5);
+      const f = slide ? freq * Math.pow(2, (1-p)*0.5) : freq;
+      return Math.tanh(Math.sin(2*Math.PI*f*ti)*2.8)*0.55*env;
     });
   };
 
-  // Build-up riser (before drop)
+  const synthLead = (t, freq, dur=0.1, wave='saw') => {
+    const s = Math.floor(t*sr), bl = Math.floor(sr*dur);
+    writeB(s, bl, (ti,p) => {
+      const env = p<0.05?p/0.05:Math.exp(-(p-0.05)*8);
+      const ph = (freq*ti)%1;
+      const samp = wave==='saw' ? (ph*2-1) : wave==='square' ? (ph<0.5?1:-1) : Math.sin(2*Math.PI*ph);
+      return Math.tanh(samp*1.8)*0.4*env;
+    });
+  };
+
+  const clap = (t) => {
+    const s = Math.floor(t*sr);
+    for (let layer=0; layer<3; layer++) {
+      const offset = Math.floor(sr*layer*0.008);
+      writeB(s+offset, Math.floor(sr*0.12), ti => (Math.random()*2-1)*Math.exp(-ti*22)*0.5);
+    }
+  };
+
   const riser = (t, dur) => {
     const s = Math.floor(t*sr), rl = Math.floor(sr*dur);
-    writeB(s, rl, (ti,p) => Math.sin(2*Math.PI*(80*Math.pow(2,p*2.5))*ti)*p*0.18 + (Math.random()*2-1)*p*0.08);
+    writeB(s, rl, (ti,p) => Math.sin(2*Math.PI*(80*Math.pow(2,p*2.2))*ti)*p*0.15 + (Math.random()*2-1)*p*0.07);
   };
 
-  const bassNotes = [55,55,73.4,82.4,61.7,55,65.4,73.4];
-  const brassNotes = [220,277.2,220,246.9,185,220,246.9,185];
+  // ════════════════════════════════════════════════════════
+  if (style === 'jd') {
+    // JEDAG JEDUG — Jungle Dutch: brass stab + double kick
+    const bassNotes = [55,55,73.4,82.4,61.7,55,65.4,73.4];
+    const brassNotes = [220,277.2,220,246.9,185,220,246.9,185];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%8;
+      if (bar4===7&&bi===0) riser(t, beatSec*4);
+      if (bi===0){kick(t,180,22);kick(t+beatSec*0.5,160,25);}
+      if (bi===1){kick(t,170,22);kick(t+beatSec*0.25,150,28);}
+      if (bi===2) kick(t,180,22);
+      if (bi===3){kick(t,175,22);kick(t+beatSec*0.75,155,30);}
+      if (bi===1||bi===3) snare(t);
+      hihat(t, bar4>=4&&bi%2===1);
+      hihat(t+beatSec*0.5);
+      if (bar4>=4){hihat(t+beatSec*0.25);hihat(t+beatSec*0.75);}
+      if (bi===0||bi===2) brass(t+beatSec*0.5, brassNotes[b%8]);
+      if (bar4>=4&&(bi===1||bi===3)) brass(t+beatSec*0.25, brassNotes[(b+4)%8]*1.5, 0.08);
+      bass808(t, bassNotes[b%8], beatSec*0.88);
+      if (bar4>=4) bass808(t+beatSec*0.5, bassNotes[(b+4)%8]*0.75, beatSec*0.38);
+    }
 
-  for (let b = 0; b < totalBeats; b++) {
-    const t = b * beatSec;
-    const bi = b % 4;
-    const bar4 = Math.floor(b/4) % 8;
+  } else if (style === 'phonk') {
+    // PHONK DARK — 808 heavy, triplet hi-hat, dark & distorted
+    const bassNotes = [41.2,41.2,55,49,41.2,36.7,41.2,55];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%4;
+      // Kick: heavy on 1, ghost on offbeats
+      kick(t, 60, 18, 41);
+      if (bi===2) kick(t, 60, 18, 41);
+      if (bi===0||bi===2) kick(t+beatSec*0.75, 55, 25, 38);
+      // Clap on 2 and 4 (no snare — phonk uses clap)
+      if (bi===1||bi===3) clap(t);
+      // Triplet hi-hat pattern (phonk signature)
+      const triUnit = beatSec/3;
+      for(let tri=0; tri<3; tri++) hihat(t+tri*triUnit, false, 0.22);
+      if (bar4>=2) { // double-time hats in second half
+        hihat(t+beatSec*0.5, false, 0.15);
+      }
+      // Dark 808 bass with slide
+      bass808(t, bassNotes[b%8], beatSec*1.1, b%8===1||b%8===5);
+      // Distorted synth stab
+      if (bi===0) synthLead(t+beatSec*0.25, bassNotes[b%8]*2, 0.08, 'square');
+      if (bi===2) synthLead(t+beatSec*0.5, bassNotes[(b+2)%8]*2, 0.06, 'square');
+    }
 
-    if (bar4 === 7 && bi === 0) riser(t, beatSec*4);
+  } else if (style === 'hype') {
+    // HYPE EDM — build + drop, synth lead, high energy
+    const leadNotes = [261.6,293.7,329.6,349.2,392,440,493.9,523.3];
+    const bassFreqs = [65.4,65.4,82.4,98,65.4,55,73.4,82.4];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4;
+      const bar8 = Math.floor(b/4)%8;
+      const isBuildup = bar8 >= 6;
+      const isDrop = bar8 < 4;
 
-    // Kick: jungle dutch double kick pattern
-    if (bi===0){kick(t);kick(t+beatSec*0.5);}
-    if (bi===1){kick(t);kick(t+beatSec*0.25);}
-    if (bi===2) kick(t);
-    if (bi===3){kick(t);kick(t+beatSec*0.75);}
+      // Riser before drop
+      if (bar8===6&&bi===0) riser(t, beatSec*8);
 
-    // Snare on 2 and 4
-    if (bi===1||bi===3) snare(t, bar4<4);
+      if (isDrop) {
+        // 4-on-the-floor kick
+        kick(t, 160, 20, 50);
+        // Clap on 2&4
+        if (bi===1||bi===3) clap(t);
+        // 16th note hats
+        for (let s=0; s<4; s++) hihat(t+s*beatSec/4, s===1||s===3, s===0?0.32:0.18);
+        // Bass
+        bass808(t, bassFreqs[b%8], beatSec*0.9);
+        // Synth lead arp
+        synthLead(t, leadNotes[b%8], 0.12, 'saw');
+        if (bi===1||bi===3) synthLead(t+beatSec*0.5, leadNotes[(b+4)%8], 0.08, 'saw');
+      } else if (isBuildup) {
+        // Buildup: increasing hats only
+        const density = (bar8-6)/2;
+        for (let s=0; s<Math.ceil(density*8+1); s++) hihat(t+s*beatSec/8, false, 0.15+density*0.1);
+      } else {
+        // Break
+        if (bi===0||bi===2) kick(t, 150, 20, 50);
+        if (bi===1||bi===3) snare(t, 16, 0.5);
+        hihat(t, false, 0.2); hihat(t+beatSec*0.5, false, 0.2);
+        bass808(t, bassFreqs[b%8]*0.5, beatSec*1.5);
+      }
+    }
 
-    // Hi-hats
-    hihat(t, bar4>=4 && bi%2===1);
-    hihat(t+beatSec*0.5, false);
-    if (bar4>=4){hihat(t+beatSec*0.25,false);hihat(t+beatSec*0.75,false);}
+  } else if (style === 'trap') {
+    // TRAP BANGER — 808 slide, 32nd hi-hat roll, sub bass
+    const bassFreqs = [41.2,41.2,46.2,55,41.2,36.7,43.7,49];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%4;
+      // Kick: 1 and sometimes 3
+      kick(t, 70, 15, 37);
+      if (bi===2&&bar4%2===1) kick(t+beatSec*0.5, 65, 18, 35);
+      // Snare ghost + hard
+      if (bi===1||bi===3) snare(t, 20, 0.65);
+      if (bi===3) snare(t+beatSec*0.75, 30, 0.3); // ghost
+      // Hi-hat roll (trap signature)
+      const rollDensity = bi===1||bi===3 ? 8 : 4;
+      for (let h=0; h<rollDensity; h++) {
+        hihat(t+h*beatSec/rollDensity, false, h===0?0.3:0.12+(Math.random()*0.08));
+      }
+      // Open hat on off-beats
+      if (bi===1||bi===3) hihat(t+beatSec*0.5, true, 0.22);
+      // 808 slide bass (trap signature)
+      bass808(t, bassFreqs[b%8], beatSec*(b%8<4?1.1:0.7), b%8===0||b%8===4);
+      if (bar4>=2) bass808(t+beatSec*0.5, bassFreqs[(b+4)%8]*0.75, beatSec*0.5);
+    }
 
-    // Brass stabs — jedagjedug signature on offbeats
-    if (bi===0||bi===2) brass(t+beatSec*0.5, brassNotes[b%8], 0.1);
-    if (bar4>=4&&(bi===1||bi===3)) brass(t+beatSec*0.25, brassNotes[(b+4)%8]*1.5, 0.08);
-
-    // Funky bass
-    bass(t, bassNotes[b%8], beatSec*0.85);
-    if (bar4>=4) bass(t+beatSec*0.5, bassNotes[(b+4)%8]*0.75, beatSec*0.35);
+  } else if (style === 'cinematic') {
+    // EPIC CINEMATIC — orchestra hit + taiko drums + sweeping bass
+    const heroNotes   = [130.8,146.8,164.8,174.6,196,220,246.9,261.6];
+    const subBass     = [32.7,32.7,41.2,36.7,32.7,29.1,32.7,41.2];
+    for (let b=0; b<totalBeats; b++) {
+      const t = b*beatSec, bi = b%4, bar8 = Math.floor(b/4)%8;
+      // Taiko-style kick (deep, long)
+      kick(t, 80, 12, 32);
+      if (bi===2) kick(t, 75, 14, 30);
+      // Big snare on 2&4 (orchestral)
+      if (bi===1||bi===3) snare(t, 10, 0.9);
+      // Cymbals (sparse, open)
+      hihat(t, bi===0||bi===2, 0.18);
+      // Orchestra brass hit on downbeat
+      if (bi===0) {
+        brass(t, heroNotes[b%8], 0.3);
+        brass(t, heroNotes[b%8]*1.5, 0.25);
+        brass(t, heroNotes[b%8]*2, 0.2);
+      }
+      // Riser every 8 bars
+      if (bar8===7&&bi===3) riser(t, beatSec);
+      // Deep sub bass sweep
+      bass808(t, subBass[b%8], beatSec*1.8, true);
+      // Synth pad chord
+      if (bi===0) {
+        synthLead(t, heroNotes[b%8]*0.5, beatSec*3.5, 'sine');
+        synthLead(t, heroNotes[b%8]*0.75, beatSec*3.5, 'sine');
+      }
+    }
   }
 
   // Hard limiter
-  for (let i=0;i<frames;i++){L[i]=Math.tanh(L[i]*0.7)*0.9;R[i]=Math.tanh(R[i]*0.7)*0.9;}
+  for (let i=0;i<frames;i++){L[i]=Math.tanh(L[i]*0.75)*0.92;R[i]=Math.tanh(R[i]*0.75)*0.92;}
   return buf;
 }
+
 async function loadTrackBuffer(audioCtx, track, durationSec) {
-  // Track synthetic — langsung generate
-  if (!track.url) {
-    return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm);
-  }
-  // Coba fetch URL
-  try {
-    const resp = await fetch(track.url, { mode: 'cors' });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const arrayBuf = await resp.arrayBuffer();
-    return await audioCtx.decodeAudioData(arrayBuf);
-  } catch(e) {
-    console.warn('Musik URL gagal, pakai synthetic beat:', e.message);
-    return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm);
-  }
+  // Semua track pakai synthetic — karakter beda berdasarkan style
+  return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm, track.style || 'jd');
 }
 
 function renderMusikList() {
   const wrap = document.getElementById('musikList');
   if (!wrap) return;
+  const styleColors = {
+    jd:        { border:'rgba(255,230,0,0.5)',  bg:'rgba(255,230,0,0.07)',   text:'#ffe600' },
+    phonk:     { border:'rgba(136,0,255,0.5)',  bg:'rgba(136,0,255,0.08)',   text:'#cc44ff' },
+    hype:      { border:'rgba(0,245,255,0.5)',  bg:'rgba(0,245,255,0.07)',   text:'#00f5ff' },
+    trap:      { border:'rgba(255,102,0,0.5)',  bg:'rgba(255,102,0,0.07)',   text:'#ff8833' },
+    cinematic: { border:'rgba(255,215,0,0.5)',  bg:'rgba(255,215,0,0.07)',   text:'#ffd700' },
+  };
   wrap.innerHTML = JJ_TRACKS.map(t => {
-    const on = _selectedTrack.id === t.id;
-    return `<div onclick="selectTrack('${t.id}')" id="track-${t.id}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;border:0.5px solid ${on?'rgba(234,179,8,0.5)':'rgba(255,255,255,0.08)'};background:${on?'rgba(234,179,8,0.08)':'rgba(255,255,255,0.03)'};cursor:pointer;transition:all 0.15s">
-      <button onclick="event.stopPropagation();previewTrack('${t.id}')" id="playbtn-${t.id}" style="width:32px;height:32px;border-radius:50%;border:1px solid ${on?'rgba(234,179,8,0.6)':'rgba(255,255,255,0.15)'};background:${on?'rgba(234,179,8,0.15)':'rgba(255,255,255,0.06)'};color:${on?'#fbbf24':'rgba(240,237,232,0.5)'};font-size:13px;flex-shrink:0">▶</button>
+    const on  = _selectedTrack.id === t.id;
+    const col = styleColors[t.style] || styleColors.jd;
+    const borderC    = on ? col.border : 'rgba(255,255,255,0.08)';
+    const bgC        = on ? col.bg     : 'rgba(255,255,255,0.03)';
+    const textC      = on ? col.text   : '#f0ede8';
+    const btnBorderC = on ? col.border : 'rgba(255,255,255,0.15)';
+    const btnBgC     = on ? col.bg     : 'rgba(255,255,255,0.06)';
+    const btnTextC   = on ? col.text   : 'rgba(240,237,232,0.5)';
+    const tid = t.id;
+    return `<div onclick="selectTrack('${tid}')" id="track-${tid}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;border:0.5px solid ${borderC};background:${bgC};cursor:pointer;transition:all 0.15s">
+      <button onclick="event.stopPropagation();previewTrack('${tid}')" id="playbtn-${tid}" style="width:34px;height:34px;border-radius:50%;border:1px solid ${btnBorderC};background:${btnBgC};color:${btnTextC};font-size:13px;flex-shrink:0">&#9654;</button>
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600;color:${on?'#fbbf24':'#f0ede8'};margin-bottom:2px">${t.name} <span style="font-size:10px;opacity:0.6">${t.genre}</span></div>
-        <div style="font-size:10px;color:rgba(240,237,232,0.35)">${t.desc} · ${t.bpm} BPM</div>
+        <div style="font-size:12px;font-weight:600;color:${textC};margin-bottom:2px">${t.name} <span style="font-size:10px;opacity:0.55">${t.genre}</span></div>
+        <div style="font-size:10px;color:rgba(240,237,232,0.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.desc} &middot; ${t.bpm} BPM</div>
       </div>
-      ${on?'<div style="font-size:16px">✓</div>':''}
+      ${on ? `<div style="font-size:13px;color:${col.text}">&#10003;</div>` : ''}
     </div>`;
   }).join('');
 }

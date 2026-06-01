@@ -93,6 +93,51 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
         <a href="https://youtube.com/@jedagjedugsound" target="_blank" style="font-size:10px;color:#fbbf24;opacity:0.7;text-decoration:none">@jedagjedugsound ↗</a>
       </div>
       <div style="display:flex;flex-direction:column;gap:6px" id="musikList"></div>
+
+      <!-- UPLOAD MUSIK SENDIRI -->
+      <div style="margin-top:10px;border-top:0.5px solid rgba(255,255,255,0.06);padding-top:10px">
+        <div style="font-size:11px;letter-spacing:1px;color:rgba(240,237,232,0.3);text-transform:uppercase;margin-bottom:8px">🎤 Atau Upload Musikmu Sendiri</div>
+        <label id="musikDropzone" for="musikFileInput" style="display:block;border:1.5px dashed rgba(255,200,0,0.25);border-radius:10px;padding:14px;text-align:center;cursor:pointer;transition:all 0.2s" ondragover="event.preventDefault();this.style.borderColor='rgba(255,200,0,0.6)'" ondragleave="this.style.borderColor='rgba(255,200,0,0.25)'" ondrop="dropMusik(event)">
+          <div id="musikDropContent">
+            <div style="font-size:18px;margin-bottom:4px">🎵</div>
+            <div style="font-size:12px;color:rgba(240,237,232,0.6);font-weight:500">Klik atau seret file musik</div>
+            <div style="font-size:10px;color:rgba(240,237,232,0.3);margin-top:3px">MP3, WAV, OGG · Beat otomatis terdeteksi</div>
+          </div>
+          <input type="file" id="musikFileInput" accept="audio/*" style="display:none" onchange="handleMusikFile(this.files[0])"/>
+        </label>
+
+        <!-- Waveform + info setelah upload -->
+        <div id="musikCustomInfo" style="display:none;margin-top:10px">
+          <div style="background:rgba(255,200,0,0.07);border:0.5px solid rgba(255,200,0,0.3);border-radius:9px;padding:12px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <div>
+                <div id="musikCustomName" style="font-size:12px;font-weight:600;color:#fbbf24"></div>
+                <div id="musikCustomMeta" style="font-size:10px;color:rgba(240,237,232,0.4);margin-top:2px"></div>
+              </div>
+              <button onclick="clearCustomMusik()" style="font-size:10px;background:transparent;border:0.5px solid rgba(255,255,255,0.15);color:rgba(240,237,232,0.4);padding:4px 8px;border-radius:5px">✕ Hapus</button>
+            </div>
+            <!-- Beat detect status -->
+            <div id="beatDetectStatus" style="font-size:11px;color:rgba(240,237,232,0.5)">⏳ Mendeteksi beat...</div>
+            <!-- Mini waveform canvas -->
+            <canvas id="waveformCanvas" style="width:100%;height:36px;border-radius:5px;margin-top:8px;display:none"></canvas>
+            <!-- BPM result -->
+            <div id="bpmResult" style="display:none;margin-top:8px;display:none">
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="flex:1;background:rgba(255,200,0,0.1);border-radius:6px;padding:7px 10px;text-align:center">
+                  <div style="font-size:9px;color:rgba(240,237,232,0.35);text-transform:uppercase;letter-spacing:0.8px">BPM Terdeteksi</div>
+                  <div id="bpmValue" style="font-size:20px;font-weight:800;color:#fbbf24;font-family:'Syne',sans-serif">—</div>
+                </div>
+                <div style="flex:1;background:rgba(255,200,0,0.1);border-radius:6px;padding:7px 10px;text-align:center">
+                  <div style="font-size:9px;color:rgba(240,237,232,0.35);text-transform:uppercase;letter-spacing:0.8px">Jumlah Beat</div>
+                  <div id="beatCount" style="font-size:20px;font-weight:800;color:#fbbf24;font-family:'Syne',sans-serif">—</div>
+                </div>
+              </div>
+              <div style="font-size:10px;color:rgba(134,239,172,0.8);margin-top:7px;text-align:center">✓ Siap! Efek JJ akan sync ke beat musikmu</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style="margin-top:8px;font-size:10px;color:rgba(240,237,232,0.2)">🎵 Audio asli video diganti musik JJ. Beat sync otomatis — flash + zoom ikut irama. Semua royalty-free.</div>
     </div>
 
@@ -727,7 +772,9 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
       const IS_JJ      = (typeof _gaya !== 'undefined') && _gaya === 'jj';
       const IS_JJ_AUDIO= IS_JJ;
-      const JJ_BPM     = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm   : 140;
+      // BPM: pakai custom jika ada, fallback ke track synthetic
+      const USE_CUSTOM_BEATS = IS_JJ && _useCustomMusik && _customMusikBeats.length > 4;
+      const JJ_BPM     = USE_CUSTOM_BEATS ? _customMusikBpm : ((IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 140);
       const JJ_STYLE   = (IS_JJ && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
       const JJ_BEAT    = 60 / JJ_BPM;
       const JJ_HALF    = JJ_BEAT / 2;
@@ -765,16 +812,26 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
           if (IS_JJ_AUDIO && (typeof _selectedTrack !== 'undefined') && _selectedTrack) {
-            // JJ mode — synthetic music, video stays muted
+            // JJ mode — musik (custom atau synthetic), video stays muted
             video.muted = true;
             const dest = audioCtx.createMediaStreamDestination();
-            loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2).then(decoded => {
+
+            const playMusik = (buf) => {
               const src = audioCtx.createBufferSource();
-              src.buffer = decoded; src.loop = true;
+              src.buffer = buf; src.loop = true;
               const gain = audioCtx.createGain(); gain.gain.value = 0.9;
               src.connect(gain); gain.connect(dest); gain.connect(audioCtx.destination);
               src.start(0);
-            }).catch(e => console.warn('loadTrackBuffer:', e));
+            };
+
+            if (_useCustomMusik && _customMusikBuffer) {
+              // Gunakan musik custom yang sudah di-decode
+              playMusik(_customMusikBuffer);
+            } else {
+              loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2)
+                .then(playMusik)
+                .catch(e => console.warn('loadTrackBuffer:', e));
+            }
             combinedStream = new MediaStream([canvasStream.getVideoTracks()[0], ...dest.stream.getAudioTracks()]);
 
           } else {
@@ -817,10 +874,27 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
           // ── JJ BEAT SYNC — per quarter/half/beat/bar ─────────────
           if (IS_JJ) {
-            const beatIdx    = Math.floor(elapsed / JJ_BEAT);
-            const halfIdx    = Math.floor(elapsed / JJ_HALF);
-            const quarterIdx = Math.floor(elapsed / JJ_QUARTER);
-            const barIdx     = Math.floor(beatIdx / 4);
+            let beatIdx, halfIdx, quarterIdx, barIdx;
+
+            if (USE_CUSTOM_BEATS) {
+              // Mode custom: cari beat index berdasarkan timestamp aktual
+              // elapsed = posisi di klip; musik loop dari 0, jadi map ke posisi musik
+              const musikPos = elapsed % (_customMusikBuffer ? _customMusikBuffer.duration : 999);
+              beatIdx = 0;
+              for (let bi2 = 0; bi2 < _customMusikBeats.length; bi2++) {
+                if (_customMusikBeats[bi2] <= musikPos + 0.01) beatIdx = bi2;
+                else break;
+              }
+              // Hitung half & quarter dari BPM terdeteksi
+              halfIdx    = Math.floor(elapsed / JJ_HALF);
+              quarterIdx = Math.floor(elapsed / JJ_QUARTER);
+              barIdx     = Math.floor(beatIdx / 4);
+            } else {
+              beatIdx    = Math.floor(elapsed / JJ_BEAT);
+              halfIdx    = Math.floor(elapsed / JJ_HALF);
+              quarterIdx = Math.floor(elapsed / JJ_QUARTER);
+              barIdx     = Math.floor(beatIdx / 4);
+            }
 
             // On new BAR (every 4 beats) — trigger special effects
             if (barIdx !== jjLastBar) {
@@ -1259,7 +1333,7 @@ async function runPipeline(info) {
   setProgress(18,'Menganalisis video...');
   addLog('> Mengirim data ke AI...');
   addLog(_gaya === 'jj'
-    ? `> 🎵 Jedag Jedug — musik: ${_selectedTrack ? _selectedTrack.name : '-'} (${_selectedTrack ? _selectedTrack.bpm : 120} BPM)`
+    ? `> 🎵 Jedag Jedug — musik: ${_useCustomMusik ? ('Custom: '+(_customMusikFile?_customMusikFile.name:'?')+' ('+_customMusikBpm+' BPM)') : (_selectedTrack ? _selectedTrack.name + ' (' + _selectedTrack.bpm + ' BPM)' : '-')}`
     : '> 🎬 Mode Normal aktif',
     _gaya === 'jj' ? '#fbbf24' : 'rgba(240,237,232,0.45)');
 
@@ -1587,6 +1661,13 @@ const JJ_TRACKS = [
 
 let _selectedTrack = JJ_TRACKS[0];
 let _musikAudioEl  = null;
+
+// Custom musik upload state
+let _customMusikFile   = null;   // File object
+let _customMusikBuffer = null;   // AudioBuffer (decoded)
+let _customMusikBeats  = [];     // Array of beat timestamps (seconds)
+let _customMusikBpm    = 0;
+let _useCustomMusik    = false;
 
 // ── Synthetic Beat Generator — 5 karakter musik berbeda ───────────
 function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
@@ -2033,6 +2114,179 @@ async function loadTrackBuffer(audioCtx, track, durationSec) {
   return createSyntheticBeatBuffer(audioCtx, durationSec, track.bpm, track.style || 'jd');
 }
 
+// ─── Beat Detection Engine ────────────────────────────────────────
+function detectBeats(audioBuffer) {
+  // Gunakan channel pertama, downsample ke ~22kHz untuk kecepatan
+  const sr = audioBuffer.sampleRate;
+  const raw = audioBuffer.getChannelData(0);
+
+  // 1. Hitung energy per frame (frame = ~10ms)
+  const frameSize = Math.round(sr * 0.010); // 10ms
+  const hopSize   = Math.round(sr * 0.005); // 5ms hop
+  const energies = [];
+  for (let i = 0; i + frameSize < raw.length; i += hopSize) {
+    let e = 0;
+    for (let j = 0; j < frameSize; j++) e += raw[i+j] * raw[i+j];
+    energies.push(e / frameSize);
+  }
+
+  // 2. Spectral flux — hitung kenaikan energi mendadak (onset detection)
+  const flux = [0];
+  for (let i = 1; i < energies.length; i++) {
+    const diff = energies[i] - energies[i-1];
+    flux.push(diff > 0 ? diff : 0);
+  }
+
+  // 3. Adaptive threshold — rata-rata lokal × 1.5
+  const winSize = Math.round(0.2 / 0.005); // 200ms window
+  const beats = [];
+  for (let i = winSize; i < flux.length - winSize; i++) {
+    let localMean = 0;
+    for (let j = i - winSize; j <= i + winSize; j++) localMean += flux[j];
+    localMean /= (winSize * 2 + 1);
+    if (flux[i] > localMean * 1.5 && flux[i] === Math.max(...flux.slice(i-3, i+4))) {
+      const timeSec = (i * hopSize) / sr;
+      // Min jarak antar beat = 200ms (max 300 BPM)
+      if (beats.length === 0 || timeSec - beats[beats.length-1] > 0.20) {
+        beats.push(timeSec);
+      }
+    }
+  }
+
+  // 4. Estimasi BPM dari median interval antar beat
+  const intervals = [];
+  for (let i = 1; i < beats.length; i++) intervals.push(beats[i] - beats[i-1]);
+  intervals.sort((a,b) => a-b);
+  const medianInterval = intervals[Math.floor(intervals.length / 2)] || 0.5;
+  const rawBpm = Math.round(60 / medianInterval);
+  // Normalkan ke range 60-200 BPM
+  let bpm = rawBpm;
+  while (bpm > 200) bpm = Math.round(bpm / 2);
+  while (bpm < 60)  bpm = Math.round(bpm * 2);
+
+  return { beats, bpm };
+}
+
+function drawWaveform(audioBuffer) {
+  const canvas = document.getElementById('waveformCanvas');
+  if (!canvas) return;
+  canvas.style.display = 'block';
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth || 300, H = 36;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const data = audioBuffer.getChannelData(0);
+  const step = Math.floor(data.length / W);
+  const mid = H / 2;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0,0,W,H);
+
+  const grad = ctx.createLinearGradient(0,0,W,0);
+  grad.addColorStop(0,'#ff0080'); grad.addColorStop(0.5,'#fbbf24'); grad.addColorStop(1,'#00f5ff');
+  ctx.strokeStyle = grad; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x < W; x++) {
+    let max = 0;
+    for (let i = 0; i < step; i++) {
+      const v = Math.abs(data[x * step + i] || 0);
+      if (v > max) max = v;
+    }
+    const h = max * mid * 0.9;
+    if (x === 0) ctx.moveTo(x, mid - h);
+    else ctx.lineTo(x, mid - h);
+  }
+  ctx.stroke();
+  ctx.beginPath();
+  for (let x = 0; x < W; x++) {
+    let max = 0;
+    for (let i = 0; i < step; i++) {
+      const v = Math.abs(data[x * step + i] || 0);
+      if (v > max) max = v;
+    }
+    const h = max * mid * 0.9;
+    if (x === 0) ctx.moveTo(x, mid + h);
+    else ctx.lineTo(x, mid + h);
+  }
+  ctx.stroke();
+
+  // Gambar beat markers (kuning)
+  ctx.strokeStyle = 'rgba(251,191,36,0.7)'; ctx.lineWidth = 1;
+  const dur = audioBuffer.duration;
+  _customMusikBeats.forEach(t => {
+    const x = (t / dur) * W;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  });
+}
+
+async function handleMusikFile(file) {
+  if (!file) return;
+  _customMusikFile = file;
+  _useCustomMusik  = true;
+
+  // Tampilkan info panel
+  document.getElementById('musikCustomInfo').style.display = 'block';
+  document.getElementById('musikCustomName').textContent = '🎵 ' + file.name;
+  document.getElementById('musikCustomMeta').textContent = (file.size/1024/1024).toFixed(1) + ' MB · ' + file.type;
+  document.getElementById('beatDetectStatus').textContent = '⏳ Mendecode audio...';
+  document.getElementById('bpmResult').style.display = 'none';
+  document.getElementById('waveformCanvas').style.display = 'none';
+
+  // Unselect semua track synthetic
+  document.querySelectorAll('[id^="track-"]').forEach(el => {
+    el.style.opacity = '0.4';
+  });
+
+  try {
+    // Decode audio file
+    const arrayBuf = await file.arrayBuffer();
+    const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    document.getElementById('beatDetectStatus').textContent = '⏳ Mendeteksi beat... (bisa 2-5 detik)';
+    _customMusikBuffer = await tmpCtx.decodeAudioData(arrayBuf);
+    await tmpCtx.close();
+
+    // Deteksi beat
+    const result = detectBeats(_customMusikBuffer);
+    _customMusikBeats = result.beats;
+    _customMusikBpm   = result.bpm;
+
+    // Update UI
+    document.getElementById('beatDetectStatus').textContent = '✓ Beat terdeteksi!';
+    document.getElementById('bpmValue').textContent   = _customMusikBpm;
+    document.getElementById('beatCount').textContent  = _customMusikBeats.length;
+    document.getElementById('bpmResult').style.display = 'block';
+
+    // Gambar waveform
+    drawWaveform(_customMusikBuffer);
+
+    toast(`✓ Beat musik terdeteksi: ${_customMusikBpm} BPM (${_customMusikBeats.length} beat)`);
+
+  } catch(err) {
+    console.error('Beat detection error:', err);
+    document.getElementById('beatDetectStatus').textContent = '❌ Gagal decode: ' + err.message;
+    _useCustomMusik = false; _customMusikFile = null; _customMusikBuffer = null;
+  }
+}
+
+function dropMusik(e) {
+  e.preventDefault();
+  document.getElementById('musikDropzone').style.borderColor = 'rgba(255,200,0,0.25)';
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('audio/')) handleMusikFile(f);
+  else toast('Harap upload file audio (MP3/WAV/OGG)!');
+}
+
+function clearCustomMusik() {
+  _customMusikFile = null; _customMusikBuffer = null;
+  _customMusikBeats = []; _customMusikBpm = 0; _useCustomMusik = false;
+  document.getElementById('musikCustomInfo').style.display = 'none';
+  document.getElementById('musikFileInput').value = '';
+  document.querySelectorAll('[id^="track-"]').forEach(el => el.style.opacity = '1');
+  toast('Musik custom dihapus');
+}
+
 function renderMusikList() {
   const wrap = document.getElementById('musikList');
   if (!wrap) return;
@@ -2072,6 +2326,14 @@ function renderMusikList() {
 function selectTrack(id) {
   _selectedTrack = JJ_TRACKS.find(t => t.id === id) || JJ_TRACKS[0];
   stopPreview();
+  // Kalau pilih track synthetic, clear custom musik
+  if (_useCustomMusik) {
+    _useCustomMusik = false;
+    document.getElementById('musikCustomInfo').style.display = 'none';
+    document.getElementById('musikFileInput').value = '';
+    _customMusikFile = null; _customMusikBuffer = null; _customMusikBeats = []; _customMusikBpm = 0;
+  }
+  document.querySelectorAll('[id^="track-"]').forEach(el => el.style.opacity = '1');
   renderMusikList();
 }
 
@@ -2140,10 +2402,10 @@ function setGaya(g) {
 
 function getGayaPromptExtra() {
   if (_gaya !== 'jj') return '';
-  const trackName = _selectedTrack ? _selectedTrack.name : 'Jedag Jedug Original';
-  const genre = _selectedTrack ? _selectedTrack.genre : 'Jungle Dutch';
-  const bpm = _selectedTrack ? _selectedTrack.bpm : 140;
-  const isSlow = _selectedTrack && _selectedTrack.style === 'slowbass';
+  const trackName = _useCustomMusik ? ('Musik Custom ('+(_customMusikFile?_customMusikFile.name:'?')+')') : (_selectedTrack ? _selectedTrack.name : 'Jedag Jedug Original');
+  const genre = _useCustomMusik ? 'Custom Upload' : (_selectedTrack ? _selectedTrack.genre : 'Jungle Dutch');
+  const bpm = _useCustomMusik ? _customMusikBpm : (_selectedTrack ? _selectedTrack.bpm : 140);
+  const isSlow = !_useCustomMusik && _selectedTrack && _selectedTrack.style === 'slowbass';
   return `
 GAYA EDIT: JEDAG JEDUG VIRAL — style @jedagjedugsound
 Sound dipilih: ${trackName} (${genre}, ${bpm} BPM)

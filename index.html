@@ -654,51 +654,58 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
     canvas.width = OUT_W; canvas.height = OUT_H;
     const ctx = canvas.getContext('2d', { alpha: false });
 
-    // Find supported mime type
     const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
     const mimeType = mimeTypes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e){ return false; } }) || 'video/webm';
 
-    // Gunakan createObjectURL langsung — lebih cepat & tidak ada masalah base64 overflow
-    let _blobUrl = null;
-    try { _blobUrl = URL.createObjectURL(file); } catch(e) { reject(new Error('Gagal membaca file: ' + e.message)); return; }
+    // Use FileReader — more compatible with sandboxed/HTTPS environments (GitHub Pages)
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('Gagal membaca file'));
+    fr.onload = (ev) => {
+      const dataUrl = ev.target.result;
 
-    const _setupVideo = () => {
       const video = document.createElement('video');
-      video.src = _blobUrl;
-      video.muted = true;
+      video.src = dataUrl;
+      video.muted = true;  // start muted, unmute later for normal mode
       video.preload = 'auto';
       video.playsInline = true;
-      video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:320px;height:240px;top:-9999px;left:-9999px';
+      video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:1px;height:1px;top:-9999px;left:-9999px';
       document.body.appendChild(video);
 
+      let done = false;
       const cleanup = () => {
+        if (done) return; done = true;
         try { document.body.removeChild(video); } catch(e){}
-        if (_blobUrl) { try { URL.revokeObjectURL(_blobUrl); } catch(ex){} _blobUrl = null; }
+        video.src = '';
       };
 
-      const onErr = (e) => {
-        const code = video.error ? video.error.code : '?';
-        const msgs = {1:'Proses dibatalkan',2:'Error jaringan',3:'Decode gagal — coba convert ke MP4 H.264',4:'Format tidak didukung browser — gunakan MP4 H.264'};
-        const detail = msgs[code] || ('Kode error: ' + code);
+      video.onerror = () => {
+        const code = video.error ? video.error.code : 0;
+        const msgs = {1:'Proses dibatalkan',2:'Error baca file',3:'Format tidak bisa di-decode — gunakan MP4 H.264',4:'Format tidak didukung browser — gunakan MP4 H.264'};
         cleanup();
-        reject(new Error('Gagal baca video: ' + detail));
+        reject(new Error(msgs[code] || 'Gagal membaca video (kode '+code+')'));
       };
-      video.onerror = onErr;
 
-      const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout membaca video')); }, 30000);
+      const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout — video terlalu besar atau format tidak didukung')); }, 45000);
 
       video.addEventListener('loadedmetadata', () => {
         clearTimeout(hardTimeout);
-        const rawDur = video.duration;
 
-        const doRecord = (videoDur) => {
+        // Robust duration detection
+        const getRealDuration = () => new Promise(res => {
+          const d = video.duration;
+          if (isFinite(d) && d > 0 && d < 86400) { res(d); return; }
+          // Try seeking to end to force duration
+          const onSeeked = () => { res(isFinite(video.duration) && video.duration > 0 ? video.duration : 3600); };
+          video.addEventListener('seeked', onSeeked, { once: true });
+          try { video.currentTime = 99999; } catch(e) { res(3600); }
+        });
+
+        getRealDuration().then(videoDur => {
           const requestedDur = Math.max(1, endSec - startSec);
-          let safeStart = Math.max(0, startSec);
-          let safeEnd = (isFinite(videoDur) && videoDur < 86400) ? Math.min(endSec, videoDur) : endSec;
-          if (isFinite(videoDur) && videoDur < 86400 && (safeEnd - safeStart) < requestedDur) {
-            safeStart = Math.max(0, safeEnd - requestedDur);
-          }
-          if (safeEnd - safeStart <= 0) { cleanup(); reject(new Error('Video terlalu pendek')); return; }
+          let safeStart = Math.max(0, Math.min(startSec, videoDur - 1));
+          let safeEnd   = Math.min(endSec, videoDur);
+          if (safeEnd - safeStart < 1) { safeStart = Math.max(0, safeEnd - requestedDur); }
+          if (safeEnd - safeStart <= 0) { cleanup(); reject(new Error('Video lebih pendek dari durasi klip')); return; }
 
           const vw = video.videoWidth  || OUT_W;
           const vh = video.videoHeight || OUT_H;
@@ -708,304 +715,238 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           if (srcRatio > targetRatio) { sw = Math.round(vh * targetRatio); sx = Math.round((vw-sw)/2); }
           else                        { sh = Math.round(vw / targetRatio); sy = Math.round((vh-sh)/2); }
 
+          // Seek to start
+          video.addEventListener('seeked', () => {
+            startRecording(video, safeStart, safeEnd, requestedDur, sx, sy, sw, sh);
+          }, { once: true });
           video.currentTime = safeStart;
-
-          video.addEventListener('seeked', () => {
-            // Setup audio
-            let combinedStream;
-            let audioCtx = null;
-            const canvasStream = canvas.captureStream(30);
-            const IS_JJ_AUDIO = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-
-            try {
-              audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-              const dest = audioCtx.createMediaStreamDestination();
-
-              if (IS_JJ_AUDIO && _selectedTrack) {
-                // ── JJ MODE: mute video, pakai musik JJ ──────────────
-                video.muted = true;
-
-                // Load musik — pakai loadTrackBuffer (auto fallback ke synthetic)
-                loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2).then(decoded => {
-                  const src = audioCtx.createBufferSource();
-                  src.buffer = decoded;
-                  src.loop = true;
-                  const gainNode = audioCtx.createGain();
-                  gainNode.gain.value = 0.85;
-                  src.connect(gainNode);
-                  gainNode.connect(dest);
-                  gainNode.connect(audioCtx.destination);
-                  src.start(0);
-                }).catch(e => console.warn('loadTrackBuffer error:', e));
-
-                combinedStream = new MediaStream([
-                  canvasStream.getVideoTracks()[0],
-                  ...dest.stream.getAudioTracks()
-                ]);
-
-              } else {
-                // ── NORMAL MODE: pakai audio video asli ──────────────
-                video.muted = false;
-                const src  = audioCtx.createMediaElementSource(video);
-                src.connect(dest);
-                src.connect(audioCtx.destination);
-                const audioTrack = dest.stream.getAudioTracks()[0];
-                combinedStream = audioTrack
-                  ? new MediaStream([canvasStream.getVideoTracks()[0], audioTrack])
-                  : canvasStream;
-              }
-            } catch(e) {
-              console.warn('Audio setup failed, video only:', e);
-              video.muted = false;
-              combinedStream = canvasStream;
-            }
-
-            // Start recorder
-            let rec;
-            try {
-              rec = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 });
-            } catch(e) {
-              rec = new MediaRecorder(combinedStream);
-            }
-
-            const chunks = [];
-            rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-            const FPS = 30, frameDur = 1000 / FPS;
-            let lastFrameAt = 0, rafHandle = null;
-
-            const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-            const JJ_BPM   = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 138;
-            const JJ_STYLE = (IS_JJ && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
-            const JJ_BEAT  = 60 / JJ_BPM;
-            const JJ_HALF  = JJ_BEAT / 2;
-            let jjFlashAlpha=0, jjShakeX=0, jjShakeY=0, jjZoom=1.0;
-            let jjLastBeat=-1, jjLastHalf=-1, jjRgbShift=0;
-
-            // Palet warna per style
-            const JJ_PALETTES = {
-              jd:        ['#ffffff','#ffe600','#00f5ff','#ff0080','#ffffff','#ffe600'],
-              phonk:     ['#8800ff','#ff0040','#220011','#aa00ff','#ff0040','#440022'],
-              hype:      ['#00f5ff','#ffffff','#00ff88','#00f5ff','#ffe600','#ffffff'],
-              trap:      ['#ff6600','#ffffff','#ff3300','#ffaa00','#ffffff','#ff6600'],
-              cinematic: ['#ffffff','#ffd700','#c0c0c0','#ffffff','#ffe066','#c0c0c0'],
-            };
-            const jjPalette = JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd;
-
-            const drawFrame = (now) => {
-              rafHandle = requestAnimationFrame(drawFrame);
-              if (now - lastFrameAt < frameDur - 1) return;
-              lastFrameAt = now;
-              const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
-              const progress = Math.min(1, elapsed / requestedDur);
-
-              if (IS_JJ) {
-                const beatIdx = Math.floor(elapsed / JJ_BEAT);
-                const halfIdx = Math.floor(elapsed / JJ_HALF);
-                const quarterIdx = Math.floor(elapsed / (JJ_BEAT/4));
-                if (beatIdx !== jjLastBeat) {
-                  jjLastBeat = beatIdx;
-                  const isDwn = beatIdx%4===0;
-                  const isSnare = beatIdx%4===1||beatIdx%4===3;
-                  jjFlashAlpha = isDwn ? 0.82 : isSnare ? 0.6 : 0.42;
-                  const sh = isDwn ? 26 : isSnare ? 16 : 10;
-                  jjShakeX = (Math.random()-0.5)*sh;
-                  jjShakeY = (Math.random()-0.5)*sh*(isDwn?1.4:0.8);
-                  jjZoom = isDwn ? 1.13 : isSnare ? 0.91 : (beatIdx%2===0?1.07:0.96);
-                  jjRgbShift = isDwn ? 18 : isSnare ? 11 : 6;
-                }
-                if (halfIdx !== jjLastHalf) {
-                  jjLastHalf = halfIdx;
-                  jjShakeX+=(Math.random()-0.5)*8;
-                  jjShakeY+=(Math.random()-0.5)*8;
-                }
-                jjFlashAlpha=Math.max(0,jjFlashAlpha-0.08);
-                jjShakeX*=0.55; jjShakeY*=0.55;
-                jjZoom+=(1.0-jjZoom)*0.18;
-                jjRgbShift=Math.max(0,jjRgbShift-1.1);
-              }
-
-              // ── Draw video frame (with JJ transform + RGB split) ──
-              ctx.save();
-              ctx.imageSmoothingEnabled = true;
-              ctx.imageSmoothingQuality = 'high';
-
-              if (IS_JJ && (jjZoom !== 1.0 || jjShakeX !== 0 || jjShakeY !== 0)) {
-                const cx = OUT_W / 2, cy = OUT_H / 2;
-                ctx.translate(cx + jjShakeX, cy + jjShakeY);
-                ctx.scale(jjZoom, jjZoom);
-                ctx.translate(-cx, -cy);
-              }
-
-              if (IS_JJ && jjRgbShift > 1.5) {
-                // RGB chromatic aberration split
-                const shift = jjRgbShift;
-                ctx.globalCompositeOperation = 'source-over';
-                // Red channel offset left
-                ctx.globalAlpha = 0.55;
-                ctx.filter = `hue-rotate(0deg) saturate(3)`;
-                try { ctx.drawImage(video, sx, sy, sw, sh, -shift, 0, OUT_W, OUT_H); } catch(e){}
-                // Blue channel offset right
-                ctx.filter = `hue-rotate(200deg) saturate(3)`;
-                try { ctx.drawImage(video, sx, sy, sw, sh, shift, 0, OUT_W, OUT_H); } catch(e){}
-                ctx.filter = 'none';
-                ctx.globalAlpha = 0.85;
-                try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-                ctx.globalAlpha = 1;
-              } else {
-                try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-              }
-              ctx.restore();
-
-              // ── JJ Flash overlay ──────────────────────────────────
-              if (IS_JJ && jjFlashAlpha > 0.01) {
-                ctx.globalAlpha = jjFlashAlpha * 0.75;
-                ctx.fillStyle = jjPalette[jjLastBeat % jjPalette.length];
-                ctx.fillRect(0, 0, OUT_W, OUT_H);
-                ctx.globalAlpha = 1;
-              }
-
-              // ── JJ Color Grade: high contrast + saturation boost ──
-              if (IS_JJ) {
-                // Diagonal scan line overlay (jedag jedug aesthetic)
-                if (jjLastBeat % 4 === 0) {
-                  ctx.globalAlpha = 0.07;
-                  for (let y = 0; y < OUT_H; y += 4) {
-                    ctx.fillStyle = y%8===0 ? '#ffffff' : '#000000';
-                    ctx.fillRect(0, y, OUT_W, 2);
-                  }
-                  ctx.globalAlpha = 1;
-                }
-                // Vignette
-                const vig = ctx.createRadialGradient(OUT_W/2, OUT_H/2, OUT_H*0.25, OUT_W/2, OUT_H/2, OUT_H*0.85);
-                vig.addColorStop(0, 'rgba(0,0,0,0)');
-                vig.addColorStop(1, 'rgba(0,0,0,0.55)');
-                ctx.globalAlpha = 1;
-                ctx.fillStyle = vig;
-                ctx.fillRect(0, 0, OUT_W, OUT_H);
-
-                // Yellow/pink glow edge (jedag jedug signature color)
-                if (jjLastBeat % 2 === 0) {
-                  ctx.globalAlpha = 0.12;
-                  const edgeGlow = ctx.createLinearGradient(0, 0, OUT_W, OUT_H);
-                  edgeGlow.addColorStop(0, jjPalette[0]);
-                  edgeGlow.addColorStop(0.5, 'transparent');
-                  edgeGlow.addColorStop(1, jjPalette[3]);
-                  ctx.fillStyle = edgeGlow;
-                  ctx.fillRect(0, 0, OUT_W, OUT_H);
-                  ctx.globalAlpha = 1;
-                }
-              }
-
-              // Progress bar
-              const barH = Math.max(4, Math.round(OUT_H * 0.006)), barY = OUT_H - barH;
-              ctx.globalAlpha = 0.5; ctx.fillStyle = 'rgba(0,0,0,0.4)';
-              ctx.fillRect(0, barY, OUT_W, barH); ctx.globalAlpha = 1;
-              const grad = ctx.createLinearGradient(0, 0, OUT_W, 0);
-              if (IS_JJ) {
-                grad.addColorStop(0, jjPalette[3]); grad.addColorStop(0.5, jjPalette[0]); grad.addColorStop(1, jjPalette[1]);
-              } else {
-                grad.addColorStop(0,'#7c3aed'); grad.addColorStop(0.5,'#a78bfa'); grad.addColorStop(1,'#c4b5fd');
-              }
-              ctx.fillStyle = grad; ctx.fillRect(0, barY, OUT_W * progress, barH);
-
-              // Subtitles
-              if (subtitleOn && timedSubs.length > 0) {
-                const subTime = elapsed;
-                let active = null;
-                for (const s of timedSubs) { if (s.t <= subTime + 0.2) active = s; else break; }
-                const nextSub = timedSubs.find(s => s.t > (active ? active.t : -1));
-                const hideAfter = nextSub ? nextSub.t : (active ? active.t + 4 : 0);
-                const liveText = (active && subTime < hideAfter) ? active.text : '';
-                if (liveText) {
-                  const fontSize = Math.round(OUT_W * (IS_JJ ? 0.068 : 0.058));
-                  ctx.font = `${IS_JJ ? '900' : '700'} ${fontSize}px Arial, sans-serif`;
-                  ctx.textAlign = 'center';
-                  const words = liveText.split(' '), maxW = OUT_W * 0.82;
-                  const lines = []; let cur = '';
-                  for (const w of words) {
-                    const test = cur ? cur+' '+w : w;
-                    if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = w; } else cur = test;
-                  }
-                  if (cur) lines.push(cur);
-                  const shown = lines.slice(-3), lineH = fontSize * 1.35, padX=28, padY=14;
-                  const boxW = Math.min(maxW+padX*2, OUT_W*0.92), boxH = shown.length*lineH+padY*2;
-                  const boxX = (OUT_W-boxW)/2, boxY = OUT_H*0.80-boxH;
-                  if (IS_JJ) {
-                    // JJ style: large impactful text, thick stroke, center screen
-                    const jjY = OUT_H * 0.55; // center-ish position
-                    ctx.globalAlpha = 1;
-                    ctx.lineJoin = 'round';
-                    shown.forEach((ln, i) => {
-                      const y = jjY + i * lineH;
-                      // Multi-layer shadow for depth
-                      ctx.strokeStyle = '#000';
-                      ctx.lineWidth = fontSize * 0.18;
-                      ctx.strokeText(ln, OUT_W/2, y);
-                      ctx.lineWidth = fontSize * 0.08;
-                      ctx.strokeStyle = jjLastBeat%2===0 ? '#ff0080' : '#00f5ff';
-                      ctx.strokeText(ln, OUT_W/2, y);
-                      // Yellow main fill
-                      ctx.fillStyle = jjFlashAlpha > 0.3 ? '#ffffff' : jjPalette[1];
-                      ctx.fillText(ln, OUT_W/2, y);
-                    });
-                  } else {
-                    ctx.globalAlpha = 0.82; ctx.fillStyle = '#000';
-                    roundRect(ctx, boxX, boxY, boxW, boxH, 12); ctx.fill();
-                    ctx.globalAlpha = 1; ctx.fillStyle = '#fff';
-                    ctx.shadowColor = 'rgba(0,0,0,1)'; ctx.shadowBlur = 7;
-                    shown.forEach((ln, i) => ctx.fillText(ln, OUT_W/2, boxY+padY+fontSize+i*lineH));
-                    ctx.shadowBlur = 0;
-                  }
-                }
-              }
-            };
-
-            const progressInterval = setInterval(() => {
-              const elapsed = Math.max(0, Math.min(video.currentTime - safeStart, requestedDur));
-              const pct = Math.min(95, 20 + (elapsed / requestedDur) * 75);
-              setModalBar(pct, `Merekam ${Math.round(elapsed)}s / ${Math.round(requestedDur)}s...`);
-            }, 400);
-
-            rec.onstop = () => {
-              cancelAnimationFrame(rafHandle);
-              clearInterval(progressInterval);
-              if (audioCtx) try { audioCtx.close(); } catch(e){}
-              cleanup();
-              if (chunks.length === 0) { reject(new Error('Tidak ada data video terekam')); return; }
-              resolve(new Blob(chunks, { type: mimeType }));
-            };
-
-            // Draw first frame before starting
-            try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-            rec.start(200);
-            rafHandle = requestAnimationFrame(drawFrame);
-            video.playbackRate = 1;
-            video.play().catch(e => console.warn('play() error:', e));
-
-            setTimeout(() => {
-              try { video.pause(); rec.stop(); } catch(e){ cleanup(); reject(e); }
-            }, requestedDur * 1000 + 800);
-
-          }, { once: true });
-        }; // end doRecord
-
-        if (!isFinite(rawDur) || isNaN(rawDur) || rawDur <= 0) {
-          video.addEventListener('seeked', () => {
-            const d = video.duration;
-            doRecord(isFinite(d) && d > 0 ? d : 86400);
-          }, { once: true });
-          video.currentTime = 1e101;
-        } else {
-          doRecord(rawDur);
-        }
+        });
       }, { once: true });
+
+      const IS_JJ      = (typeof _gaya !== 'undefined') && _gaya === 'jj';
+      const IS_JJ_AUDIO= IS_JJ;
+      const JJ_BPM     = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm   : 138;
+      const JJ_STYLE   = (IS_JJ && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
+      const JJ_BEAT    = 60 / JJ_BPM;
+      const JJ_HALF    = JJ_BEAT / 2;
+      let jjFlashAlpha=0, jjShakeX=0, jjShakeY=0, jjZoom=1.0;
+      let jjLastBeat=-1, jjLastHalf=-1, jjRgbShift=0;
+
+      const JJ_PALETTES = {
+        jd:        ['#ffffff','#ffe600','#00f5ff','#ff0080','#ffffff','#ffe600'],
+        phonk:     ['#8800ff','#ff0040','#220011','#aa00ff','#ff0040','#440022'],
+        hype:      ['#00f5ff','#ffffff','#00ff88','#00f5ff','#ffe600','#ffffff'],
+        trap:      ['#ff6600','#ffffff','#ff3300','#ffaa00','#ffffff','#ff6600'],
+        cinematic: ['#ffffff','#ffd700','#c0c0c0','#ffffff','#ffe066','#c0c0c0'],
+      };
+      const jjPalette = JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd;
+
+      function startRecording(video, safeStart, safeEnd, requestedDur, sx, sy, sw, sh) {
+        // ── Audio setup ─────────────────────────────────────────────
+        let combinedStream;
+        let audioCtx = null;
+        const canvasStream = canvas.captureStream(30);
+
+        try {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+          if (IS_JJ_AUDIO && (typeof _selectedTrack !== 'undefined') && _selectedTrack) {
+            // JJ mode — synthetic music, video stays muted
+            video.muted = true;
+            const dest = audioCtx.createMediaStreamDestination();
+            loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2).then(decoded => {
+              const src = audioCtx.createBufferSource();
+              src.buffer = decoded; src.loop = true;
+              const gain = audioCtx.createGain(); gain.gain.value = 0.9;
+              src.connect(gain); gain.connect(dest); gain.connect(audioCtx.destination);
+              src.start(0);
+            }).catch(e => console.warn('loadTrackBuffer:', e));
+            combinedStream = new MediaStream([canvasStream.getVideoTracks()[0], ...dest.stream.getAudioTracks()]);
+
+          } else {
+            // Normal mode — use original video audio
+            // IMPORTANT: must unmute BEFORE createMediaElementSource
+            video.muted = false;
+            const dest = audioCtx.createMediaStreamDestination();
+            const srcNode = audioCtx.createMediaElementSource(video);
+            srcNode.connect(dest);
+            srcNode.connect(audioCtx.destination);
+            const audioTrack = dest.stream.getAudioTracks()[0];
+            combinedStream = audioTrack
+              ? new MediaStream([canvasStream.getVideoTracks()[0], audioTrack])
+              : canvasStream;
+          }
+        } catch(audioErr) {
+          console.warn('Audio setup failed, continuing video-only:', audioErr);
+          video.muted = false;
+          combinedStream = canvasStream;
+        }
+
+        // ── MediaRecorder ────────────────────────────────────────────
+        let rec;
+        try { rec = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 }); }
+        catch(e) { try { rec = new MediaRecorder(combinedStream, { mimeType }); } catch(e2) { rec = new MediaRecorder(combinedStream); } }
+
+        const chunks = [];
+        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+        // ── Frame draw loop ──────────────────────────────────────────
+        const FPS = 30, frameDur = 1000/FPS;
+        let lastFrameAt = 0, rafHandle = null;
+
+        const drawFrame = (now) => {
+          rafHandle = requestAnimationFrame(drawFrame);
+          if (now - lastFrameAt < frameDur - 1) return;
+          lastFrameAt = now;
+          const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
+          const progress = Math.min(1, elapsed / requestedDur);
+
+          // JJ beat sync
+          if (IS_JJ) {
+            const beatIdx = Math.floor(elapsed / JJ_BEAT);
+            const halfIdx = Math.floor(elapsed / JJ_HALF);
+            if (beatIdx !== jjLastBeat) {
+              jjLastBeat = beatIdx;
+              const isDwn = beatIdx%4===0, isSnare = beatIdx%4===1||beatIdx%4===3;
+              jjFlashAlpha = isDwn ? 0.82 : isSnare ? 0.6 : 0.42;
+              const sh2 = isDwn ? 26 : isSnare ? 16 : 10;
+              jjShakeX = (Math.random()-0.5)*sh2;
+              jjShakeY = (Math.random()-0.5)*sh2*(isDwn?1.4:0.8);
+              jjZoom = isDwn ? 1.13 : isSnare ? 0.91 : (beatIdx%2===0?1.07:0.96);
+              jjRgbShift = isDwn ? 18 : isSnare ? 11 : 6;
+            }
+            if (halfIdx !== jjLastHalf) { jjLastHalf = halfIdx; jjShakeX+=(Math.random()-0.5)*8; jjShakeY+=(Math.random()-0.5)*8; }
+            jjFlashAlpha=Math.max(0,jjFlashAlpha-0.08);
+            jjShakeX*=0.55; jjShakeY*=0.55;
+            jjZoom+=(1.0-jjZoom)*0.18;
+            jjRgbShift=Math.max(0,jjRgbShift-1.1);
+          }
+
+          // Draw video
+          ctx.save();
+          ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+          if (IS_JJ && (jjZoom!==1.0||jjShakeX!==0||jjShakeY!==0)) {
+            const cx=OUT_W/2,cy=OUT_H/2;
+            ctx.translate(cx+jjShakeX,cy+jjShakeY); ctx.scale(jjZoom,jjZoom); ctx.translate(-cx,-cy);
+          }
+          if (IS_JJ && jjRgbShift > 1.5) {
+            const sh3 = jjRgbShift;
+            ctx.globalAlpha=0.55; ctx.filter=`hue-rotate(0deg) saturate(3)`;
+            try{ctx.drawImage(video,sx,sy,sw,sh,-sh3,0,OUT_W,OUT_H);}catch(e){}
+            ctx.filter=`hue-rotate(200deg) saturate(3)`;
+            try{ctx.drawImage(video,sx,sy,sw,sh,sh3,0,OUT_W,OUT_H);}catch(e){}
+            ctx.filter='none'; ctx.globalAlpha=0.85;
+            try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
+            ctx.globalAlpha=1;
+          } else {
+            try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
+          }
+          ctx.restore();
+
+          // Flash overlay
+          if (IS_JJ && jjFlashAlpha > 0.01) {
+            ctx.globalAlpha=jjFlashAlpha*0.75;
+            ctx.fillStyle=jjPalette[jjLastBeat % jjPalette.length];
+            ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
+          }
+
+          // JJ color grade
+          if (IS_JJ) {
+            if (jjLastBeat%4===0) {
+              ctx.globalAlpha=0.07;
+              for(let y=0;y<OUT_H;y+=4){ctx.fillStyle=y%8===0?'#fff':'#000';ctx.fillRect(0,y,OUT_W,2);}
+              ctx.globalAlpha=1;
+            }
+            const vig=ctx.createRadialGradient(OUT_W/2,OUT_H/2,OUT_H*0.25,OUT_W/2,OUT_H/2,OUT_H*0.85);
+            vig.addColorStop(0,'rgba(0,0,0,0)'); vig.addColorStop(1,'rgba(0,0,0,0.55)');
+            ctx.fillStyle=vig; ctx.fillRect(0,0,OUT_W,OUT_H);
+            if (jjLastBeat%2===0) {
+              ctx.globalAlpha=0.12;
+              const eg=ctx.createLinearGradient(0,0,OUT_W,OUT_H);
+              eg.addColorStop(0,jjPalette[0]); eg.addColorStop(0.5,'transparent'); eg.addColorStop(1,jjPalette[3]);
+              ctx.fillStyle=eg; ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
+            }
+          }
+
+          // Progress bar
+          const barH=Math.max(4,Math.round(OUT_H*0.006)),barY=OUT_H-barH;
+          ctx.globalAlpha=0.5; ctx.fillStyle='rgba(0,0,0,0.4)';
+          ctx.fillRect(0,barY,OUT_W,barH); ctx.globalAlpha=1;
+          const grad=ctx.createLinearGradient(0,0,OUT_W,0);
+          if (IS_JJ){grad.addColorStop(0,jjPalette[3]);grad.addColorStop(0.5,jjPalette[0]);grad.addColorStop(1,jjPalette[1]);}
+          else{grad.addColorStop(0,'#7c3aed');grad.addColorStop(0.5,'#a78bfa');grad.addColorStop(1,'#c4b5fd');}
+          ctx.fillStyle=grad; ctx.fillRect(0,barY,OUT_W*progress,barH);
+
+          // Subtitles
+          if (subtitleOn && timedSubs.length > 0) {
+            const subTime=elapsed;
+            let active=null;
+            for(const s of timedSubs){if(s.t<=subTime+0.2)active=s;else break;}
+            const nextSub=timedSubs.find(s=>s.t>(active?active.t:-1));
+            const hideAfter=nextSub?nextSub.t:(active?active.t+4:0);
+            const liveText=(active&&subTime<hideAfter)?active.text:'';
+            if(liveText){
+              const fontSize=Math.round(OUT_W*(IS_JJ?0.068:0.058));
+              ctx.font=`${IS_JJ?'900':'700'} ${fontSize}px Arial, sans-serif`;
+              ctx.textAlign='center';
+              const words=liveText.split(' '),maxW=OUT_W*0.82;
+              const lines=[];let cur='';
+              for(const w of words){const test=cur?cur+' '+w:w;if(ctx.measureText(test).width>maxW&&cur){lines.push(cur);cur=w;}else cur=test;}
+              if(cur)lines.push(cur);
+              const shown=lines.slice(-3),lineH=fontSize*1.35,padX=28,padY=14;
+              const boxW=Math.min(maxW+padX*2,OUT_W*0.92),boxH=shown.length*lineH+padY*2;
+              const boxX=(OUT_W-boxW)/2,boxY=OUT_H*0.80-boxH;
+              if(IS_JJ){
+                const jjY=OUT_H*0.55;
+                ctx.globalAlpha=1; ctx.lineJoin='round';
+                shown.forEach((ln,i)=>{
+                  const y=jjY+i*lineH;
+                  ctx.strokeStyle='#000'; ctx.lineWidth=fontSize*0.18; ctx.strokeText(ln,OUT_W/2,y);
+                  ctx.lineWidth=fontSize*0.08; ctx.strokeStyle=jjLastBeat%2===0?'#ff0080':'#00f5ff'; ctx.strokeText(ln,OUT_W/2,y);
+                  ctx.fillStyle=jjFlashAlpha>0.3?'#ffffff':jjPalette[1]; ctx.fillText(ln,OUT_W/2,y);
+                });
+              } else {
+                ctx.globalAlpha=0.82; ctx.fillStyle='#000';
+                roundRect(ctx,boxX,boxY,boxW,boxH,12); ctx.fill();
+                ctx.globalAlpha=1; ctx.fillStyle='#fff';
+                ctx.shadowColor='rgba(0,0,0,1)'; ctx.shadowBlur=7;
+                shown.forEach((ln,i)=>ctx.fillText(ln,OUT_W/2,boxY+padY+fontSize+i*lineH));
+                ctx.shadowBlur=0;
+              }
+            }
+          }
+        };
+
+        // Progress modal update
+        const progressInterval = setInterval(() => {
+          const el=Math.max(0,Math.min(video.currentTime-safeStart,requestedDur));
+          setModalBar(Math.min(95,20+(el/requestedDur)*75),`Merekam ${Math.round(el)}s / ${Math.round(requestedDur)}s...`);
+        }, 400);
+
+        rec.onstop = () => {
+          cancelAnimationFrame(rafHandle);
+          clearInterval(progressInterval);
+          if(audioCtx) try{audioCtx.close();}catch(e){}
+          cleanup();
+          if(chunks.length===0){reject(new Error('Tidak ada data terekam — coba format MP4 H.264'));return;}
+          resolve(new Blob(chunks,{type:mimeType}));
+        };
+
+        // Draw first frame then start
+        try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
+        rec.start(200);
+        rafHandle = requestAnimationFrame(drawFrame);
+        video.playbackRate = 1;
+        video.play().catch(e => console.warn('play():', e));
+        setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, requestedDur*1000+800);
+      }
 
       video.load();
     };
-    _setupVideo();
+    fr.readAsDataURL(file);
   });
 }
+
 
 // ─── Init & UI ───────────────────────────────────────────────────
 function initCats() {

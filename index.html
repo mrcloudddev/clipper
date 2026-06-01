@@ -138,6 +138,64 @@ button{cursor:pointer;font-family:'DM Sans',sans-serif;transition:all 0.2s}
         </div>
       </div>
 
+      <!-- UPLOAD CONTOH VIDEO JJ -->
+      <div style="margin-top:10px;border-top:0.5px solid rgba(255,255,255,0.06);padding-top:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:11px;letter-spacing:1px;color:rgba(240,237,232,0.3);text-transform:uppercase">🎬 Upload Contoh Video JJ</div>
+          <span style="font-size:9px;background:linear-gradient(90deg,#ff0080,#ffe600);color:#000;padding:2px 7px;border-radius:8px;font-weight:800">AI CLONE</span>
+        </div>
+        <div style="font-size:11px;color:rgba(240,237,232,0.35);margin-bottom:10px;line-height:1.5">Upload video JJ yang kamu suka — AI analisis ritme, efek, dan intensitas, lalu tiru persis untuk hasil editanmu.</div>
+
+        <label id="jjRefDropzone" for="jjRefInput"
+          ondragover="event.preventDefault();this.style.borderColor='rgba(255,0,128,0.6)'"
+          ondragleave="this.style.borderColor='rgba(255,0,128,0.25)'"
+          ondrop="dropJJRef(event)"
+          style="display:block;border:1.5px dashed rgba(255,0,128,0.25);border-radius:10px;padding:14px;text-align:center;cursor:pointer;transition:all 0.2s">
+          <div id="jjRefDropContent">
+            <div style="font-size:22px;margin-bottom:4px">🎬</div>
+            <div style="font-size:12px;color:rgba(240,237,232,0.6);font-weight:500">Seret atau klik — video JJ contoh</div>
+            <div style="font-size:10px;color:rgba(240,237,232,0.3);margin-top:3px">MP4, WebM, MOV · AI clone style otomatis</div>
+          </div>
+          <input type="file" id="jjRefInput" accept="video/*" style="display:none" onchange="handleJJRef(this.files[0])"/>
+        </label>
+
+        <!-- Hasil analisis contoh JJ -->
+        <div id="jjRefInfo" style="display:none;margin-top:10px">
+          <div style="background:rgba(255,0,128,0.06);border:0.5px solid rgba(255,0,128,0.3);border-radius:9px;padding:12px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <div>
+                <div id="jjRefName" style="font-size:12px;font-weight:600;color:#ff6eb4"></div>
+                <div id="jjRefMeta" style="font-size:10px;color:rgba(240,237,232,0.4);margin-top:2px"></div>
+              </div>
+              <button onclick="clearJJRef()" style="font-size:10px;background:transparent;border:0.5px solid rgba(255,255,255,0.15);color:rgba(240,237,232,0.4);padding:4px 8px;border-radius:5px">&#x2715; Hapus</button>
+            </div>
+            <div id="jjRefStatus" style="font-size:11px;color:rgba(240,237,232,0.5);margin-bottom:8px">&#x23F3; Menganalisis video...</div>
+            <canvas id="jjRefWaveform" style="width:100%;height:32px;border-radius:5px;display:none;margin-bottom:8px"></canvas>
+            <div id="jjRefCards" style="display:none">
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+                <div style="background:rgba(255,0,128,0.1);border-radius:6px;padding:7px;text-align:center">
+                  <div style="font-size:9px;color:rgba(240,237,232,0.35);text-transform:uppercase;letter-spacing:0.7px">BPM</div>
+                  <div id="jjRefBpm" style="font-size:18px;font-weight:800;color:#ff6eb4;font-family:'Syne',sans-serif">&#8212;</div>
+                </div>
+                <div style="background:rgba(255,0,128,0.1);border-radius:6px;padding:7px;text-align:center">
+                  <div style="font-size:9px;color:rgba(240,237,232,0.35);text-transform:uppercase;letter-spacing:0.7px">STYLE</div>
+                  <div id="jjRefStyleLabel" style="font-size:11px;font-weight:700;color:#ff6eb4;padding-top:3px">&#8212;</div>
+                </div>
+                <div style="background:rgba(255,0,128,0.1);border-radius:6px;padding:7px;text-align:center">
+                  <div style="font-size:9px;color:rgba(240,237,232,0.35);text-transform:uppercase;letter-spacing:0.7px">ENERGY</div>
+                  <div id="jjRefEnergy" style="font-size:18px;font-weight:800;color:#ff6eb4;font-family:'Syne',sans-serif">&#8212;</div>
+                </div>
+              </div>
+              <div style="background:rgba(0,0,0,0.3);border-radius:7px;padding:10px;margin-bottom:8px">
+                <div style="font-size:10px;color:rgba(240,237,232,0.3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px">&#x26A1; Efek yang Diclone</div>
+                <div id="jjRefEffects" style="font-size:11px;color:rgba(240,237,232,0.7);line-height:1.7"></div>
+              </div>
+              <div style="font-size:10px;color:rgba(134,239,172,0.8);text-align:center">&#x2713; Style berhasil dianalisis &#8212; editing otomatis meniru contoh ini</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style="margin-top:8px;font-size:10px;color:rgba(240,237,232,0.2)">🎵 Audio asli video diganti musik JJ. Beat sync otomatis — flash + zoom ikut irama. Semua royalty-free.</div>
     </div>
 
@@ -773,8 +831,13 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
       const IS_JJ      = (typeof _gaya !== 'undefined') && _gaya === 'jj';
       const IS_JJ_AUDIO= IS_JJ;
       // BPM: pakai custom jika ada, fallback ke track synthetic
-      const USE_CUSTOM_BEATS = IS_JJ && _useCustomMusik && _customMusikBeats.length > 4;
-      const JJ_BPM     = USE_CUSTOM_BEATS ? _customMusikBpm : ((IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 140);
+      // JJ ref video beats take priority, then custom musik, then synthetic track
+      const USE_JJ_REF_BEATS   = IS_JJ && _useJJRef && _jjRefBeats.length > 4;
+      const USE_CUSTOM_BEATS   = IS_JJ && !USE_JJ_REF_BEATS && _useCustomMusik && _customMusikBeats.length > 4;
+      // Active beats/BPM source
+      const ACTIVE_BEATS  = USE_JJ_REF_BEATS ? _jjRefBeats : (USE_CUSTOM_BEATS ? _customMusikBeats : []);
+      const ACTIVE_BPM    = USE_JJ_REF_BEATS ? _jjRefBpm   : (USE_CUSTOM_BEATS ? _customMusikBpm   : 0);
+      const JJ_BPM     = ACTIVE_BPM > 0 ? ACTIVE_BPM : ((IS_JJ && _selectedTrack) ? _selectedTrack.bpm : 140);
       const JJ_STYLE   = (IS_JJ && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
       const JJ_BEAT    = 60 / JJ_BPM;
       const JJ_HALF    = JJ_BEAT / 2;
@@ -811,8 +874,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         try {
           audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-          if (IS_JJ_AUDIO && (typeof _selectedTrack !== 'undefined') && _selectedTrack) {
-            // JJ mode — musik (custom atau synthetic), video stays muted
+          if (IS_JJ_AUDIO && ((typeof _selectedTrack !== 'undefined' && _selectedTrack) || _useJJRef || _useCustomMusik)) {
+            // JJ mode — musik dari contoh JJ / custom / synthetic; video stays muted
             video.muted = true;
             const dest = audioCtx.createMediaStreamDestination();
 
@@ -835,7 +898,10 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               src.start(0, loopStart);
             };
 
-            if (_useCustomMusik && _customMusikBuffer) {
+            if (_useJJRef && _jjRefAudioBuffer) {
+              // JJ Ref mode — pakai audio dari video contoh JJ (sync ke beat yang sudah dianalisis)
+              playMusik(_jjRefAudioBuffer, _jjRefLoopStart, _jjRefLoopEnd);
+            } else if (_useCustomMusik && _customMusikBuffer) {
               playMusik(_customMusikBuffer, _customMusikLoopStart, _customMusikLoopEnd);
             } else {
               loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 2)
@@ -850,6 +916,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             video.muted = false;
             const dest = audioCtx.createMediaStreamDestination();
             const srcNode = audioCtx.createMediaElementSource(video);
+            // Resume context first to avoid initial audio silence/delay
+            if (audioCtx.state === 'suspended') audioCtx.resume();
             srcNode.connect(dest);
             srcNode.connect(audioCtx.destination);
             const audioTrack = dest.stream.getAudioTracks()[0];
@@ -874,32 +942,40 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         // ── Frame draw loop ──────────────────────────────────────────
         const FPS = 30, frameDur = 1000/FPS;
         let lastFrameAt = 0, rafHandle = null;
+        let recordingStartTime = null; // wall-clock time when recording actually began
 
         const drawFrame = (now) => {
           rafHandle = requestAnimationFrame(drawFrame);
           if (now - lastFrameAt < frameDur - 1) return;
           lastFrameAt = now;
-          const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
+          if (recordingStartTime === null) recordingStartTime = now;
+          // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
+          const wallElapsed = (now - recordingStartTime) / 1000;
+          const videoElapsed = Math.max(0, video.currentTime - safeStart);
+          // Prefer videoElapsed if video is running, fallback to wall clock (avoids freeze at start)
+          const elapsed  = Math.min(Math.max(0, videoElapsed > 0.05 ? videoElapsed : wallElapsed), requestedDur);
           const progress = Math.min(1, elapsed / requestedDur);
 
           // ── JJ BEAT SYNC — per quarter/half/beat/bar ─────────────
           if (IS_JJ) {
             let beatIdx, halfIdx, quarterIdx, barIdx;
 
-            if (USE_CUSTOM_BEATS) {
-              // elapsed = posisi di klip video
-              // Musik sudah mulai dari loopStart, jadi posisi musik = elapsed mod loopDuration
-              const loopDur = (_customMusikLoopEnd > _customMusikLoopStart)
-                ? (_customMusikLoopEnd - _customMusikLoopStart)
-                : (_customMusikBuffer ? _customMusikBuffer.duration - _customMusikLoopStart : 60);
-              const musikPos = elapsed % loopDur; // posisi dalam loop, relatif ke loopStart (= downbeat 0)
-              // Cari beat index — beats sudah relatif ke firstDownbeat/loopStart
+            if (USE_JJ_REF_BEATS || USE_CUSTOM_BEATS) {
+              // Use real beat timestamps (from JJ ref video OR custom musik)
+              const loopStart = USE_JJ_REF_BEATS ? _jjRefLoopStart : _customMusikLoopStart;
+              const loopEnd   = USE_JJ_REF_BEATS ? _jjRefLoopEnd   : _customMusikLoopEnd;
+              const beats     = ACTIVE_BEATS;
+              const loopDur   = (loopEnd > loopStart)
+                ? (loopEnd - loopStart)
+                : (USE_JJ_REF_BEATS ? (_jjRefAudioBuffer ? _jjRefAudioBuffer.duration - loopStart : 60)
+                                    : (_customMusikBuffer ? _customMusikBuffer.duration - loopStart : 60));
+              const musikPos = elapsed % loopDur;
+              // Find beat index from real beat array
               beatIdx = 0;
-              for (let bi2 = 0; bi2 < _customMusikBeats.length; bi2++) {
-                if (_customMusikBeats[bi2] <= musikPos + 0.01) beatIdx = bi2;
+              for (let bi2 = 0; bi2 < beats.length; bi2++) {
+                if (beats[bi2] <= musikPos + 0.01) beatIdx = bi2;
                 else break;
               }
-              // Hitung half & quarter dari BPM terdeteksi
               halfIdx    = Math.floor(elapsed / JJ_HALF);
               quarterIdx = Math.floor(elapsed / JJ_QUARTER);
               barIdx     = Math.floor(beatIdx / 4);
@@ -929,34 +1005,44 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               const isSnare = bi === 1 || bi === 3;
               const isKick2 = bi === 2;
 
+              // ── Use cloned profile params if JJ ref video uploaded ──
+              const _p = (_useJJRef && _jjRefStyle) ? _jjRefStyle : null;
+              const _zIn  = _p ? _p.zoomIn  : (jjDropActive ? 1.18 : 1.10);
+              const _zOut = _p ? _p.zoomOut : (jjDropActive ? 0.88 : 0.93);
+              const _rgb  = _p ? _p.rgbShift : (jjDropActive ? 28 : 16);
+              const _shBase = _p ? _p.shakeAmt : (jjDropActive ? 38 : 14);
+              const _fDecay = _p ? _p.flashDecay : 0.075;
+
               // Flash: downbeat brightest, snare medium
               jjFlashAlpha = isDwn ? (jjDropActive ? 0.92 : 0.72) : isSnare ? 0.55 : 0.38;
 
-              // Shake: brutal on downbeat drop, subtle on break
-              const shakeAmt = jjDropActive ? (isDwn?38:isSnare?20:12) : (isDwn?14:8);
+              // Shake: from profile or default
+              const shakeAmt = jjDropActive ? (isDwn?_shBase:isSnare?Math.round(_shBase*0.53):Math.round(_shBase*0.32)) : (isDwn?Math.round(_shBase*0.37):Math.round(_shBase*0.21));
               jjShakeX = (Math.random()-0.5) * shakeAmt;
               jjShakeY = (Math.random()-0.5) * shakeAmt * (isDwn?1.5:0.9);
 
-              // Zoom: punch in on downbeat, snap out on snare
-              jjZoom = isDwn ? (jjDropActive?1.18:1.10) : isSnare ? (jjDropActive?0.88:0.93) : isKick2 ? 1.06 : 0.97;
+              // Zoom: punch in on downbeat, snap out on snare — from profile
+              jjZoom = isDwn ? (jjDropActive?_zIn:(_zIn*0.93+0.07)) : isSnare ? (jjDropActive?_zOut:(_zOut*0.92+0.08)) : isKick2 ? (_zIn*0.5+0.5) : 0.97;
 
-              // RGB shift amount
-              jjRgbShift = isDwn ? (jjDropActive?28:16) : isSnare ? 14 : 8;
+              // RGB shift — from profile
+              jjRgbShift = isDwn ? (jjDropActive?_rgb:Math.round(_rgb*0.57)) : isSnare ? Math.round(_rgb*0.5) : Math.round(_rgb*0.29);
 
-              // Scanline sweep on downbeat
-              if (isDwn) jjScanlineY = 0;
+              // Scanline sweep on downbeat — only if profile allows
+              const _scanOn = _p ? _p.scanline : true;
+              if (isDwn && _scanOn) jjScanlineY = 0;
 
               // Skew on offbeat
               jjSkewX = isSnare ? (Math.random()-0.5)*0.08 : 0;
 
-              // Rotate micro-tilt on snare (Break Dutch style)
+              // Rotate micro-tilt on snare
               jjRotate = isSnare ? (Math.random()-0.5)*0.04 : 0;
 
               // Warp strength for tunnel/fisheye
               jjWarpStrength = isDwn && jjDropActive ? 1.0 : 0.0;
 
-              // Strobe on heavy downbeat drop
-              if (isDwn && jjDropActive && barIdx % 4 === 0) jjStrobeOn = true;
+              // Strobe on heavy downbeat drop — only if profile allows
+              const _strobeOn = _p ? _p.strobe : true;
+              if (isDwn && jjDropActive && barIdx % 4 === 0 && _strobeOn) jjStrobeOn = true;
             }
 
             // On new HALF-BEAT
@@ -976,7 +1062,9 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             }
 
             // Decay all values
-            jjFlashAlpha  = Math.max(0, jjFlashAlpha - 0.075);
+            // Flash decay rate: faster = punchier (from cloned profile if active)
+            const _decayRate = (_useJJRef && _jjRefStyle) ? _jjRefStyle.flashDecay : 0.075;
+            jjFlashAlpha  = Math.max(0, jjFlashAlpha - _decayRate);
             jjShakeX     *= 0.48; jjShakeY *= 0.48;
             jjZoom       += (1.0 - jjZoom) * 0.22;
             jjRgbShift    = Math.max(0, jjRgbShift - 1.4);
@@ -1205,13 +1293,22 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           resolve(new Blob(chunks,{type:mimeType}));
         };
 
-        // Draw first frame then start
+        // Draw first frame then start — wait for play() before starting recorder
+        // to prevent blank/frozen frames at the beginning (Normal mode delay bug)
         try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
-        rec.start(200);
-        rafHandle = requestAnimationFrame(drawFrame);
         video.playbackRate = 1;
-        video.play().catch(e => console.warn('play():', e));
-        setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, requestedDur*1000+800);
+        video.play().then(() => {
+          // Video is actually playing now — start recorder in sync
+          rec.start(100);
+          rafHandle = requestAnimationFrame(drawFrame);
+          setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, requestedDur*1000+600);
+        }).catch(e => {
+          console.warn('play():', e);
+          // Fallback: start anyway
+          rec.start(100);
+          rafHandle = requestAnimationFrame(drawFrame);
+          setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, requestedDur*1000+600);
+        });
       }
 
       video.load();
@@ -1453,7 +1550,7 @@ function renderClips(clips) {
     <div onclick="selectClip(${c.id})" id="cc${c.id}" style="background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.08);border-radius:11px;overflow:hidden;cursor:pointer;transition:all 0.2s">
       <div style="aspect-ratio:9/16;background:${isJJ?'linear-gradient(160deg,#0d0015,#15000a,#000d1a)':bgs[i%bgs.length]};display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative">
         ${c.is_viral?'<div style="position:absolute;top:7px;left:7px;font-size:8px;background:rgba(239,68,68,0.8);color:#fff;padding:2px 5px;border-radius:3px;font-weight:700">VIRAL</div>':''}
-        ${isJJ?`<div style="position:absolute;top:7px;left:${c.is_viral?'50px':'7px'};font-size:8px;background:rgba(255,230,0,0.85);color:#000;padding:2px 5px;border-radius:3px;font-weight:800">JJ 🎵</div>`:''}
+        ${isJJ?`<div style="position:absolute;top:7px;left:${c.is_viral?'50px':'7px'};font-size:8px;background:${_useJJRef?'linear-gradient(90deg,#ff0080,#ffe600)':'rgba(255,230,0,0.85)'};color:#000;padding:2px 5px;border-radius:3px;font-weight:800">${_useJJRef?'🎬 CLONE':'JJ 🎵'}</div>`:''}
         <div style="position:absolute;top:7px;right:7px;font-size:9px;background:rgba(124,58,237,0.7);color:#e9d5ff;padding:2px 6px;border-radius:4px;font-weight:600">${c.viral_score}%</div>
         <div style="font-size:24px;margin-bottom:5px">${c.emoji}</div>
         <div style="font-size:9px;color:rgba(255,255,255,0.35)">${c.start}–${c.end}</div>
@@ -1684,6 +1781,283 @@ let _customMusikBpm    = 0;
 let _customMusikLoopStart = 0;   // detik: mulai playback dari sini (skip intro)
 let _customMusikLoopEnd   = 0;   // detik: loop kembali ke loopStart dari sini
 let _useCustomMusik    = false;
+
+// ─── JJ Reference Video State ─────────────────────────────────────
+let _jjRefFile        = null;   // File video contoh JJ
+let _jjRefAudioBuffer = null;   // Decoded audio dari video contoh
+let _jjRefBeats       = [];     // Beat timestamps dari contoh
+let _jjRefBpm         = 0;      // BPM dari contoh
+let _jjRefLoopStart   = 0;
+let _jjRefLoopEnd     = 0;
+let _jjRefStyle       = null;   // Style object hasil analisis
+let _useJJRef         = false;  // Apakah mode clone aktif
+
+// Profil efek yang bisa diclone
+const JJ_EFFECT_PROFILES = {
+  'ultra-fast': { flashDecay:0.04, shakeAmt:45, zoomIn:1.22, zoomOut:0.85, rgbShift:32, scanline:true,  strobe:true,  glitch:true,  label:'Ultra Fast Cut ⚡', bpmMin:145 },
+  'hard-drop':  { flashDecay:0.06, shakeAmt:38, zoomIn:1.18, zoomOut:0.88, rgbShift:28, scanline:true,  strobe:true,  glitch:true,  label:'Hard Drop 🔥',     bpmMin:135 },
+  'bounce':     { flashDecay:0.07, shakeAmt:28, zoomIn:1.14, zoomOut:0.90, rgbShift:18, scanline:false, strobe:false, glitch:false, label:'Bounce Groove 🎵',  bpmMin:120 },
+  'slowbass':   { flashDecay:0.10, shakeAmt:14, zoomIn:1.08, zoomOut:0.94, rgbShift:10, scanline:false, strobe:false, glitch:false, label:'Slow Bass 🌊',      bpmMin:90  },
+  'cinematic':  { flashDecay:0.12, shakeAmt:10, zoomIn:1.06, zoomOut:0.96, rgbShift:6,  scanline:false, strobe:false, glitch:false, label:'Cinematic Hit 🎬',  bpmMin:70  },
+};
+
+function detectJJProfile(bpm, energyScore) {
+  if (bpm >= 145 && energyScore > 0.72) return 'ultra-fast';
+  if (bpm >= 133 && energyScore > 0.58) return 'hard-drop';
+  if (bpm >= 115 && energyScore > 0.40) return 'bounce';
+  if (bpm >= 88  && energyScore > 0.20) return 'slowbass';
+  return 'cinematic';
+}
+
+// Analisis video JJ: ekstrak audio, deteksi beat, ukur energy & dinamika
+async function analyzeJJRef(file) {
+  return new Promise((resolve, reject) => {
+    const videoEl = document.createElement('video');
+    videoEl.src   = URL.createObjectURL(file);
+    videoEl.muted = false;
+    videoEl.preload = 'auto';
+    videoEl.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:1px;height:1px;top:-9999px';
+    document.body.appendChild(videoEl);
+
+    videoEl.addEventListener('loadedmetadata', async () => {
+      try {
+        // Extract audio via MediaRecorder
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const dest     = audioCtx.createMediaStreamDestination();
+        const srcNode  = audioCtx.createMediaElementSource(videoEl);
+        srcNode.connect(dest);
+        srcNode.connect(audioCtx.destination);
+
+        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+        const rec  = new MediaRecorder(dest.stream, { mimeType: mime });
+        const chunks = [];
+        rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+        // Rekam maks 60 detik dari video contoh
+        const capDur = Math.min(videoEl.duration || 60, 60);
+        videoEl.currentTime = 0;
+
+        videoEl.addEventListener('seeked', () => {
+          rec.start(200);
+          videoEl.play();
+          setTimeout(() => {
+            videoEl.pause();
+            rec.stop();
+          }, capDur * 1000 + 500);
+        }, { once: true });
+
+        videoEl.currentTime = 0;
+
+        rec.onstop = async () => {
+          try {
+            document.body.removeChild(videoEl);
+            URL.revokeObjectURL(videoEl.src);
+          } catch(e){}
+
+          const blob = new Blob(chunks, { type: mime });
+          const arrayBuf = await blob.arrayBuffer();
+          const tmpCtx   = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
+          const audioBuf = await tmpCtx.decodeAudioData(arrayBuf);
+          await tmpCtx.close();
+          await audioCtx.close();
+
+          // Ukur RMS energy per 50ms untuk deteksi dinamika drop vs break
+          const data   = audioBuf.getChannelData(0);
+          const sr     = audioBuf.sampleRate;
+          const winSz  = Math.floor(sr * 0.05);
+          const rmsArr = [];
+          for (let i = 0; i + winSz < data.length; i += winSz) {
+            let sum = 0;
+            for (let j = i; j < i + winSz; j++) sum += data[j] * data[j];
+            rmsArr.push(Math.sqrt(sum / winSz));
+          }
+          const maxRms   = Math.max(...rmsArr) || 1;
+          const normRms  = rmsArr.map(v => v / maxRms);
+          const avgEnergy = normRms.reduce((a,b)=>a+b,0) / normRms.length;
+
+          // Hitung dynamic range — tinggi = banyak drop/break contrast
+          const sortedRms = [...normRms].sort((a,b)=>a-b);
+          const p10 = sortedRms[Math.floor(sortedRms.length*0.10)];
+          const p90 = sortedRms[Math.floor(sortedRms.length*0.90)];
+          const dynRange = p90 - p10; // 0..1
+
+          // Beat detection
+          const beatResult = detectBeats(audioBuf);
+
+          resolve({
+            audioBuffer:  audioBuf,
+            beats:        beatResult.beats,
+            bpm:          beatResult.bpm,
+            loopStart:    beatResult.loopStart,
+            loopEnd:      beatResult.loopEnd,
+            avgEnergy,
+            dynRange,
+            duration:     audioBuf.duration,
+          });
+        };
+      } catch(err) {
+        try { document.body.removeChild(videoEl); } catch(e){}
+        reject(err);
+      }
+    }, { once: true });
+
+    videoEl.onerror = () => {
+      try { document.body.removeChild(videoEl); } catch(e){}
+      reject(new Error('Gagal membaca video contoh'));
+    };
+
+    setTimeout(() => {
+      try { document.body.removeChild(videoEl); } catch(e){}
+      reject(new Error('Timeout analisis video contoh'));
+    }, 90000);
+
+    videoEl.load();
+  });
+}
+
+// Gambar waveform dari contoh JJ (versi sederhana tanpa beat marker dari buffer)
+function drawJJRefWaveform(audioBuffer, beats) {
+  const canvas = document.getElementById('jjRefWaveform');
+  if (!canvas) return;
+  canvas.style.display = 'block';
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth || 300, H = 32;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const data = audioBuffer.getChannelData(0);
+  const step = Math.floor(data.length / W);
+  const mid  = H / 2;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0, 0, W, H);
+
+  const grad = ctx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, '#ff0080'); grad.addColorStop(0.5, '#ff6eb4'); grad.addColorStop(1, '#ffe600');
+  ctx.strokeStyle = grad; ctx.lineWidth = 1.2;
+
+  ctx.beginPath();
+  for (let x = 0; x < W; x++) {
+    let max = 0;
+    for (let i = 0; i < step; i++) { const v = Math.abs(data[x*step+i]||0); if(v>max) max=v; }
+    const h = max * mid * 0.88;
+    x === 0 ? ctx.moveTo(x, mid-h) : ctx.lineTo(x, mid-h);
+  }
+  ctx.stroke();
+  ctx.beginPath();
+  for (let x = 0; x < W; x++) {
+    let max = 0;
+    for (let i = 0; i < step; i++) { const v = Math.abs(data[x*step+i]||0); if(v>max) max=v; }
+    const h = max * mid * 0.88;
+    x === 0 ? ctx.moveTo(x, mid+h) : ctx.lineTo(x, mid+h);
+  }
+  ctx.stroke();
+
+  // Beat markers (pink)
+  const dur = audioBuffer.duration;
+  (beats || []).forEach(t => {
+    const absT = t + (window._jjRefLoopStart || 0);
+    const x = (absT / dur) * W;
+    ctx.strokeStyle = 'rgba(255,110,180,0.55)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, 3); ctx.lineTo(x, H-3); ctx.stroke();
+  });
+}
+
+async function handleJJRef(file) {
+  if (!file) return;
+  _jjRefFile = file;
+
+  const infoEl   = document.getElementById('jjRefInfo');
+  const statusEl = document.getElementById('jjRefStatus');
+  const cardsEl  = document.getElementById('jjRefCards');
+  const waveEl   = document.getElementById('jjRefWaveform');
+  if (!infoEl) return;
+
+  infoEl.style.display = 'block';
+  document.getElementById('jjRefName').textContent = '🎬 ' + file.name;
+  document.getElementById('jjRefMeta').textContent = (file.size/1024/1024).toFixed(1) + ' MB · ' + (file.type || 'video');
+  statusEl.textContent = '⏳ Mengekstrak audio dari video...';
+  cardsEl.style.display = 'none';
+  waveEl.style.display  = 'none';
+
+  try {
+    statusEl.textContent = '⏳ Mendeteksi ritme & beat contoh JJ... (5-15 detik)';
+    const result = await analyzeJJRef(file);
+
+    _jjRefAudioBuffer = result.audioBuffer;
+    _jjRefBeats       = result.beats;
+    _jjRefBpm         = result.bpm;
+    _jjRefLoopStart   = result.loopStart;
+    _jjRefLoopEnd     = result.loopEnd;
+    window._jjRefLoopStart = result.loopStart;
+
+    // Klasifikasi profil efek
+    const profileKey = detectJJProfile(result.bpm, result.avgEnergy);
+    const profile    = JJ_EFFECT_PROFILES[profileKey];
+    _jjRefStyle = { ...profile, profileKey, bpm: result.bpm, beats: result.beats,
+                    loopStart: result.loopStart, loopEnd: result.loopEnd,
+                    avgEnergy: result.avgEnergy, dynRange: result.dynRange };
+    _useJJRef = true;
+
+    // Setelah aktif, tandai custom musik tidak aktif (audio dari ref dipakai)
+    _useCustomMusik = false;
+
+    // Update UI
+    statusEl.textContent = `✓ Analisis selesai · ${result.beats.length} beat terdeteksi`;
+    document.getElementById('jjRefBpm').textContent         = result.bpm;
+    document.getElementById('jjRefStyleLabel').textContent  = profile.label;
+    const energyPct = Math.round(result.avgEnergy * 100);
+    document.getElementById('jjRefEnergy').textContent      = energyPct + '%';
+
+    // Daftar efek yang diclone
+    const effects = [
+      `⚡ Flash decay: ${profile.flashDecay < 0.06 ? 'Sangat cepat (keras)' : profile.flashDecay < 0.09 ? 'Sedang' : 'Halus'}`,
+      `📳 Shake intensitas: ${profile.shakeAmt}px${profile.shakeAmt>=38?' (brutal)':profile.shakeAmt>=25?' (medium)':' (halus)'}`,
+      `🔍 Zoom punch: ${profile.zoomIn.toFixed(2)}× masuk / ${profile.zoomOut.toFixed(2)}× keluar`,
+      `🌈 RGB shift: ${profile.rgbShift}px${profile.rgbShift>=28?' (ekstrem)':profile.rgbShift>=16?' (kuat)':' (subtle)'}`,
+      profile.scanline ? '📺 Scanline sweep: ON' : null,
+      profile.strobe   ? '🎇 Strobe flash: ON (heavy drop)' : null,
+      profile.glitch   ? '🔲 Glitch block: ON' : null,
+      `🎯 Dynamic range: ${result.dynRange > 0.5 ? 'Banyak drop/break contrast' : 'Energi stabil'}`,
+    ].filter(Boolean);
+    document.getElementById('jjRefEffects').innerHTML = effects.map(e =>
+      `<div style="padding:1px 0">${e}</div>`
+    ).join('');
+
+    cardsEl.style.display = 'block';
+    drawJJRefWaveform(result.audioBuffer, result.beats);
+
+    // Sync BPM ke state JJ untuk AI prompt
+    _customMusikBpm   = result.bpm;
+    _customMusikBeats = result.beats;
+
+    toast('✓ Style JJ berhasil diclone! BPM: ' + result.bpm + ' · Profil: ' + profile.label);
+
+  } catch(err) {
+    console.error('JJ Ref analysis error:', err);
+    statusEl.textContent = '❌ Gagal: ' + err.message + ' — coba format MP4 H.264';
+    _useJJRef = false; _jjRefFile = null;
+  }
+}
+
+function dropJJRef(e) {
+  e.preventDefault();
+  document.getElementById('jjRefDropzone').style.borderColor = 'rgba(255,0,128,0.25)';
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('video/')) handleJJRef(f);
+  else toast('Harap upload file video (MP4/WebM/MOV)!');
+}
+
+function clearJJRef() {
+  _jjRefFile = null; _jjRefAudioBuffer = null; _jjRefBeats = [];
+  _jjRefBpm  = 0;    _jjRefStyle = null;   _useJJRef = false;
+  _customMusikBpm = 0; _customMusikBeats = [];
+  document.getElementById('jjRefInfo').style.display = 'none';
+  document.getElementById('jjRefInput').value = '';
+  toast('Contoh JJ dihapus');
+}
+
 
 // ── Synthetic Beat Generator — 5 karakter musik berbeda ───────────
 function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
@@ -2500,24 +2874,48 @@ function getGayaPromptExtra() {
   if (_gaya !== 'jj') return '';
   const trackName = _useCustomMusik ? ('Musik Custom ('+(_customMusikFile?_customMusikFile.name:'?')+')') : (_selectedTrack ? _selectedTrack.name : 'Jedag Jedug Original');
   const genre = _useCustomMusik ? 'Custom Upload' : (_selectedTrack ? _selectedTrack.genre : 'Jungle Dutch');
-  const bpm = _useCustomMusik ? _customMusikBpm : (_selectedTrack ? _selectedTrack.bpm : 140);
-  const isSlow = !_useCustomMusik && _selectedTrack && _selectedTrack.style === 'slowbass';
-  return `
-GAYA EDIT: JEDAG JEDUG VIRAL — style @jedagjedugsound
-Sound dipilih: ${trackName} (${genre}, ${bpm} BPM)
-${isSlow
-  ? `- SLOW BASS MODE: pilih momen dengan emosi kuat, close-up, ekspresi wajah, atau momen haru/dramatis
-- Durasi klip: 20-35 detik — lebih panjang untuk build emosi
-- Hook: emosional, menyentuh hati, atau plot twist — bukan energi tinggi`
-  : `- Pilih segmen dengan ENERGI TINGGI, gerakan cepat, ekspresi kuat, momen dramatis
-- Durasi tiap klip: 15-25 detik — pendek, padat, langsung ke inti
-- Hook: SINGKAT & KERAS, maks 6 kata, pakai kata hype: "VIRAL!", "GILA!", "LIAT INI!"`}
-- Audio asli DIGANTI musik: sync otomatis ke beat ${bpm} BPM
-- Prioritaskan: gerakan eksplosif, ekspresi dramatis, transisi visual menarik, momen "jedug"
-- Tags WAJIB: 'jedagjedug', 'beatsync', 'fyp', 'jedagjedugsound'
-- Hindari segmen narasi lambat atau penjelasan panjang tanpa visual menarik
-- reason WAJIB sebut ritme/beat/visual klip mengapa cocok jadi JJ content
-`;
+  const bpm = _useJJRef ? _jjRefBpm : (_useCustomMusik ? _customMusikBpm : (_selectedTrack ? _selectedTrack.bpm : 140));
+  const isSlow = !_useCustomMusik && !_useJJRef && _selectedTrack && _selectedTrack.style === 'slowbass';
+
+  // Extra context jika ada video JJ referensi
+  let refExtra = '';
+  if (_useJJRef && _jjRefStyle) {
+    const energyPct = Math.round((_jjRefStyle.avgEnergy||0.6)*100);
+    const energyDesc = (_jjRefStyle.avgEnergy||0.6) > 0.65
+      ? 'FULL ENERGY — pilih momen terkencang, no slow section'
+      : (_jjRefStyle.avgEnergy||0.6) > 0.40
+        ? 'MEDIUM ENERGY — campuran momen hype dan build-up'
+        : 'LOW ENERGY — fokus emosi & visual dramatis';
+    const dynDesc = (_jjRefStyle.dynRange||0.4) > 0.5
+      ? 'BANYAK DROP — harus ada kontras tinggi/rendah energi di setiap klip'
+      : 'ENERGI STABIL — pilih momen dengan flow konsisten';
+    const flashDesc = _jjRefStyle.flashDecay < 0.06 ? 'sangat cepat & keras' : 'smooth';
+    refExtra = '\nREFERENSI STYLE (dianalisis dari video contoh pengguna):'
+      + '\n- Profil efek: ' + _jjRefStyle.label
+      + '\n- BPM terdeteksi: ' + _jjRefBpm
+      + '\n- Intensitas energi: ' + energyPct + '% — ' + energyDesc
+      + '\n- Dynamic range: ' + dynDesc
+      + '\n- Efek dominan: flash ' + flashDesc + ', shake ' + _jjRefStyle.shakeAmt + 'px, zoom ' + _jjRefStyle.zoomIn + 'x'
+      + '\nINSTRUKSI: Pilih segmen video yang PALING COCOK dengan karakter energy & ritme dari contoh di atas.';
+  }
+
+  const soundName = _useJJRef
+    ? ('Video Contoh JJ (' + (_jjRefFile ? _jjRefFile.name : '?') + ')')
+    : trackName;
+
+  const modeLines = isSlow
+    ? '- SLOW BASS MODE: pilih momen dengan emosi kuat, close-up, ekspresi wajah, atau momen haru/dramatis\n- Durasi klip: 20-35 detik — lebih panjang untuk build emosi\n- Hook: emosional, menyentuh hati, atau plot twist — bukan energi tinggi'
+    : '- Pilih segmen dengan ENERGI TINGGI, gerakan cepat, ekspresi kuat, momen dramatis\n- Durasi tiap klip: 15-25 detik — pendek, padat, langsung ke inti\n- Hook: SINGKAT & KERAS, maks 6 kata, pakai kata hype: "VIRAL!", "GILA!", "LIAT INI!"';
+
+  return '\nGAYA EDIT: JEDAG JEDUG VIRAL — style @jedagjedugsound'
+    + '\nSound dipilih: ' + soundName + ' (' + genre + ', ' + bpm + ' BPM)'
+    + refExtra
+    + '\n' + modeLines
+    + '\n- Audio asli DIGANTI musik: sync otomatis ke beat ' + bpm + ' BPM'
+    + '\n- Prioritaskan: gerakan eksplosif, ekspresi dramatis, transisi visual menarik, momen "jedug"'
+    + "\n- Tags WAJIB: 'jedagjedug', 'beatsync', 'fyp', 'jedagjedugsound'"
+    + '\n- Hindari segmen narasi lambat atau penjelasan panjang tanpa visual menarik'
+    + '\n- reason WAJIB sebut ritme/beat/visual klip mengapa cocok jadi JJ content\n';
 }
 
 // ─── Claude API ───────────────────────────────────────────────────

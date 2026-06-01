@@ -1296,10 +1296,13 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           }
         };
 
-        // Progress modal update
+        // Progress modal update — pakai wall clock sebagai fallback saat video stall
+        const recStartWall = performance.now();
         const progressInterval = setInterval(() => {
-          const el=Math.max(0,Math.min(video.currentTime-safeStart,requestedDur));
-          setModalBar(Math.min(95,20+(el/requestedDur)*75),`Merekam ${Math.round(el)}s / ${Math.round(requestedDur)}s...`);
+          const videoEl2 = Math.max(0, video.currentTime - safeStart);
+          const wallEl2  = (performance.now() - recStartWall) / 1000;
+          const el2 = Math.min(Math.max(videoEl2, wallEl2 > 2 ? wallEl2 : 0), requestedDur);
+          setModalBar(Math.min(95,20+(el2/requestedDur)*75),`Merekam ${Math.round(el2)}s / ${Math.round(requestedDur)}s...`);
         }, 400);
 
         rec.onstop = () => {
@@ -1314,13 +1317,47 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         // Draw first frame then start — wait for play() before starting recorder
         try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
         video.playbackRate = 1;
+
+        // Dinamis: tambah buffer waktu jika video stall/waiting
+        let stopTimer = null;
+        let totalStallMs = 0;
+        let stallStart = null;
+        const BASE_EXTRA = IS_JJ ? 1800 : 1000;
+
+        const scheduleStop = (extraMs = 0) => {
+          if (stopTimer) clearTimeout(stopTimer);
+          const remaining = Math.max(0, (safeEnd - video.currentTime) * 1000);
+          const delay = remaining + BASE_EXTRA + extraMs + totalStallMs;
+          stopTimer = setTimeout(() => {
+            try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
+          }, delay);
+        };
+
+        // Track stall time — perpanjang timer saat video buffering
+        video.addEventListener('waiting', () => {
+          stallStart = performance.now();
+        });
+        video.addEventListener('stalled', () => {
+          if (!stallStart) stallStart = performance.now();
+        });
+        video.addEventListener('playing', () => {
+          if (stallStart !== null) {
+            totalStallMs += performance.now() - stallStart;
+            stallStart = null;
+            scheduleStop(); // reschedule dengan stall time terbaru
+          }
+        });
+        // Jika video ended sebelum stop timer — langsung stop recorder
+        video.addEventListener('ended', () => {
+          if (stopTimer) clearTimeout(stopTimer);
+          setTimeout(() => { try { rec.stop(); } catch(e){} }, 400);
+        }, { once: true });
+
         // JJ mode: video sudah play dari luar, tapi seek ke safeStart dulu
         const doStartRec = () => {
           rec.start(100);
           rafHandle = requestAnimationFrame(drawFrame);
-          // JJ mode butuh sedikit lebih lama karena efek canvas lebih berat
-          const stopDelay = IS_JJ ? requestedDur*1000 + 1200 : requestedDur*1000 + 600;
-          setTimeout(()=>{ try{video.pause();rec.stop();}catch(e){cleanup();reject(e);} }, stopDelay);
+          scheduleStop();
         };
         video.play().then(doStartRec).catch(e => {
           console.warn('play():', e);
@@ -2875,7 +2912,8 @@ function setGaya(g) {
   btnN.querySelector('div:nth-child(2)').style.color = g==='normal' ? '#f0ede8' : 'rgba(240,237,232,0.5)';
   btnJ.style.border     = g==='jj' ? '1.5px solid rgba(234,179,8,0.6)' : '1.5px solid rgba(255,255,255,0.1)';
   btnJ.style.background = g==='jj' ? 'rgba(234,179,8,0.12)' : 'rgba(255,255,255,0.04)';
-  btnJ.querySelector('div:nth-child(2)').style.color = g==='jj' ? '#fbbf24' : 'rgba(240,237,232,0.5)';
+  // child(1)=VIRAL badge (absolute), child(2)=emoji, child(3)=judul "Jedag Jedug"
+  btnJ.querySelector('div:nth-child(3)').style.color = g==='jj' ? '#fbbf24' : 'rgba(240,237,232,0.5)';
   // Tampilkan/sembunyikan musik selector
   if (musikWrap) {
     musikWrap.style.display = g==='jj' ? 'block' : 'none';

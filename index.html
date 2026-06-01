@@ -723,19 +723,29 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
       const IS_JJ      = (typeof _gaya !== 'undefined') && _gaya === 'jj';
       const IS_JJ_AUDIO= IS_JJ;
-      const JJ_BPM     = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm   : 138;
+      const JJ_BPM     = (IS_JJ && _selectedTrack) ? _selectedTrack.bpm   : 140;
       const JJ_STYLE   = (IS_JJ && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
       const JJ_BEAT    = 60 / JJ_BPM;
       const JJ_HALF    = JJ_BEAT / 2;
+      const JJ_QUARTER = JJ_BEAT / 4;
+
+      // Per-beat state
       let jjFlashAlpha=0, jjShakeX=0, jjShakeY=0, jjZoom=1.0;
-      let jjLastBeat=-1, jjLastHalf=-1, jjRgbShift=0;
+      let jjLastBeat=-1, jjLastHalf=-1, jjLastQuarter=-1, jjRgbShift=0;
+      let jjScanlineY=0, jjGlitchBlock=null, jjGlitchTimer=0;
+      let jjStrobeOn=false, jjVignetteColor='#000', jjTunnelPhase=0;
+      let jjRotate=0, jjSkewX=0, jjInvert=false, jjInvertTimer=0;
+      let jjWarpStrength=0, jjLastBar=-1, jjDropActive=false, jjDropTimer=0;
 
       const JJ_PALETTES = {
-        jd:        ['#ffffff','#ffe600','#00f5ff','#ff0080','#ffffff','#ffe600'],
-        phonk:     ['#8800ff','#ff0040','#220011','#aa00ff','#ff0040','#440022'],
-        hype:      ['#00f5ff','#ffffff','#00ff88','#00f5ff','#ffe600','#ffffff'],
-        trap:      ['#ff6600','#ffffff','#ff3300','#ffaa00','#ffffff','#ff6600'],
-        cinematic: ['#ffffff','#ffd700','#c0c0c0','#ffffff','#ffe066','#c0c0c0'],
+        jd:         ['#ffe600','#ff0080','#00f5ff','#ffffff','#ff6600','#00ff88'],
+        koplo:      ['#ff9800','#ffeb3b','#ff5722','#ffffff','#ff9800','#e91e63'],
+        breakbeat:  ['#00dcff','#ffffff','#7c3aed','#00ff88','#00dcff','#ff0080'],
+        bassbrutal: ['#c800ff','#ff0040','#ffffff','#00f5ff','#c800ff','#ffe600'],
+        phonk:      ['#cc44ff','#ff0040','#220011','#8800ff','#ff0040','#440022'],
+        hype:       ['#00f5ff','#ffffff','#00ff88','#ffe600','#ff0080','#7c3aed'],
+        trap:       ['#ff6600','#ffffff','#ff3300','#ffaa00','#00f5ff','#ff6600'],
+        cinematic:  ['#ffd700','#ffffff','#c0c0c0','#ffe066','#aaddff','#c0c0c0'],
       };
       const jjPalette = JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd;
 
@@ -799,70 +809,205 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           const elapsed  = Math.min(Math.max(0, video.currentTime - safeStart), requestedDur);
           const progress = Math.min(1, elapsed / requestedDur);
 
-          // JJ beat sync
+          // ── JJ BEAT SYNC — per quarter/half/beat/bar ─────────────
           if (IS_JJ) {
-            const beatIdx = Math.floor(elapsed / JJ_BEAT);
-            const halfIdx = Math.floor(elapsed / JJ_HALF);
+            const beatIdx    = Math.floor(elapsed / JJ_BEAT);
+            const halfIdx    = Math.floor(elapsed / JJ_HALF);
+            const quarterIdx = Math.floor(elapsed / JJ_QUARTER);
+            const barIdx     = Math.floor(beatIdx / 4);
+
+            // On new BAR (every 4 beats) — trigger special effects
+            if (barIdx !== jjLastBar) {
+              jjLastBar = barIdx;
+              jjDropActive = barIdx % 8 < 4; // alternate drop/break every 4 bars
+              jjDropTimer = JJ_BEAT * 4;
+              // Invert flash every 8 bars
+              if (barIdx % 8 === 0) { jjInvert = true; jjInvertTimer = 0.08; }
+              // Glitch block — random horizontal slice
+              jjGlitchBlock = { y: Math.random()*OUT_H*0.7, h: OUT_H*0.08, ox: (Math.random()-0.5)*60, timer: JJ_BEAT*2 };
+            }
+
+            // On new BEAT
             if (beatIdx !== jjLastBeat) {
               jjLastBeat = beatIdx;
-              const isDwn = beatIdx%4===0, isSnare = beatIdx%4===1||beatIdx%4===3;
-              jjFlashAlpha = isDwn ? 0.82 : isSnare ? 0.6 : 0.42;
-              const sh2 = isDwn ? 26 : isSnare ? 16 : 10;
-              jjShakeX = (Math.random()-0.5)*sh2;
-              jjShakeY = (Math.random()-0.5)*sh2*(isDwn?1.4:0.8);
-              jjZoom = isDwn ? 1.13 : isSnare ? 0.91 : (beatIdx%2===0?1.07:0.96);
-              jjRgbShift = isDwn ? 18 : isSnare ? 11 : 6;
+              const bi = beatIdx % 4;
+              const isDwn   = bi === 0;
+              const isSnare = bi === 1 || bi === 3;
+              const isKick2 = bi === 2;
+
+              // Flash: downbeat brightest, snare medium
+              jjFlashAlpha = isDwn ? (jjDropActive ? 0.92 : 0.72) : isSnare ? 0.55 : 0.38;
+
+              // Shake: brutal on downbeat drop, subtle on break
+              const shakeAmt = jjDropActive ? (isDwn?38:isSnare?20:12) : (isDwn?14:8);
+              jjShakeX = (Math.random()-0.5) * shakeAmt;
+              jjShakeY = (Math.random()-0.5) * shakeAmt * (isDwn?1.5:0.9);
+
+              // Zoom: punch in on downbeat, snap out on snare
+              jjZoom = isDwn ? (jjDropActive?1.18:1.10) : isSnare ? (jjDropActive?0.88:0.93) : isKick2 ? 1.06 : 0.97;
+
+              // RGB shift amount
+              jjRgbShift = isDwn ? (jjDropActive?28:16) : isSnare ? 14 : 8;
+
+              // Scanline sweep on downbeat
+              if (isDwn) jjScanlineY = 0;
+
+              // Skew on offbeat
+              jjSkewX = isSnare ? (Math.random()-0.5)*0.08 : 0;
+
+              // Rotate micro-tilt on snare (Break Dutch style)
+              jjRotate = isSnare ? (Math.random()-0.5)*0.04 : 0;
+
+              // Warp strength for tunnel/fisheye
+              jjWarpStrength = isDwn && jjDropActive ? 1.0 : 0.0;
+
+              // Strobe on heavy downbeat drop
+              if (isDwn && jjDropActive && barIdx % 4 === 0) jjStrobeOn = true;
             }
-            if (halfIdx !== jjLastHalf) { jjLastHalf = halfIdx; jjShakeX+=(Math.random()-0.5)*8; jjShakeY+=(Math.random()-0.5)*8; }
-            jjFlashAlpha=Math.max(0,jjFlashAlpha-0.08);
-            jjShakeX*=0.55; jjShakeY*=0.55;
-            jjZoom+=(1.0-jjZoom)*0.18;
-            jjRgbShift=Math.max(0,jjRgbShift-1.1);
+
+            // On new HALF-BEAT
+            if (halfIdx !== jjLastHalf) {
+              jjLastHalf = halfIdx;
+              jjShakeX += (Math.random()-0.5)*10;
+              jjShakeY += (Math.random()-0.5)*10;
+              jjStrobeOn = false;
+              if (jjGlitchBlock) jjGlitchBlock.ox *= -0.7; // flip glitch direction
+            }
+
+            // On new QUARTER-BEAT — subtle micro-shake
+            if (quarterIdx !== jjLastQuarter) {
+              jjLastQuarter = quarterIdx;
+              jjShakeX += (Math.random()-0.5)*4;
+              jjShakeY += (Math.random()-0.5)*4;
+            }
+
+            // Decay all values
+            jjFlashAlpha  = Math.max(0, jjFlashAlpha - 0.075);
+            jjShakeX     *= 0.48; jjShakeY *= 0.48;
+            jjZoom       += (1.0 - jjZoom) * 0.22;
+            jjRgbShift    = Math.max(0, jjRgbShift - 1.4);
+            jjSkewX      *= 0.6;
+            jjRotate     *= 0.6;
+            jjWarpStrength = Math.max(0, jjWarpStrength - 0.06);
+            jjScanlineY   = (jjScanlineY + 8) % OUT_H;
+            jjInvertTimer = Math.max(0, jjInvertTimer - 0.016);
+            if (jjInvertTimer <= 0) jjInvert = false;
+            if (jjGlitchBlock) {
+              jjGlitchBlock.timer = Math.max(0, jjGlitchBlock.timer - 0.033);
+              if (jjGlitchBlock.timer <= 0) jjGlitchBlock = null;
+            }
+            jjDropTimer = Math.max(0, jjDropTimer - 0.033);
           }
 
-          // Draw video
+          // ── DRAW VIDEO with JJ transforms ───────────────────────
           ctx.save();
           ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
-          if (IS_JJ && (jjZoom!==1.0||jjShakeX!==0||jjShakeY!==0)) {
-            const cx=OUT_W/2,cy=OUT_H/2;
-            ctx.translate(cx+jjShakeX,cy+jjShakeY); ctx.scale(jjZoom,jjZoom); ctx.translate(-cx,-cy);
+
+          if (IS_JJ) {
+            const cx=OUT_W/2, cy=OUT_H/2;
+            ctx.translate(cx + jjShakeX, cy + jjShakeY);
+            if (jjRotate !== 0) ctx.rotate(jjRotate);
+            if (jjSkewX  !== 0) ctx.transform(1,0,jjSkewX,1,0,0);
+            ctx.scale(jjZoom, jjZoom);
+            ctx.translate(-cx, -cy);
           }
+
+          // RGB glitch split (Jungle Dutch signature)
           if (IS_JJ && jjRgbShift > 1.5) {
-            const sh3 = jjRgbShift;
-            ctx.globalAlpha=0.55; ctx.filter=`hue-rotate(0deg) saturate(3)`;
-            try{ctx.drawImage(video,sx,sy,sw,sh,-sh3,0,OUT_W,OUT_H);}catch(e){}
-            ctx.filter=`hue-rotate(200deg) saturate(3)`;
-            try{ctx.drawImage(video,sx,sy,sw,sh,sh3,0,OUT_W,OUT_H);}catch(e){}
-            ctx.filter='none'; ctx.globalAlpha=0.85;
+            const rs = jjRgbShift;
+            // Red channel left
+            ctx.globalAlpha=0.5; ctx.filter=`saturate(4) hue-rotate(0deg)`;
+            try{ctx.drawImage(video,sx,sy,sw,sh,-rs,0,OUT_W,OUT_H);}catch(e){}
+            // Cyan channel right
+            ctx.filter=`saturate(4) hue-rotate(165deg)`;
+            try{ctx.drawImage(video,sx,sy,sw,sh,rs,0,OUT_W,OUT_H);}catch(e){}
+            // Center clean
+            ctx.filter='none'; ctx.globalAlpha=0.88;
             try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
-            ctx.globalAlpha=1;
+            ctx.globalAlpha=1; ctx.filter='none';
           } else {
             try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
           }
           ctx.restore();
 
-          // Flash overlay
-          if (IS_JJ && jjFlashAlpha > 0.01) {
-            ctx.globalAlpha=jjFlashAlpha*0.75;
-            ctx.fillStyle=jjPalette[jjLastBeat % jjPalette.length];
-            ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
-          }
-
-          // JJ color grade
+          // ── POST EFFECTS ─────────────────────────────────────────
           if (IS_JJ) {
-            if (jjLastBeat%4===0) {
-              ctx.globalAlpha=0.07;
-              for(let y=0;y<OUT_H;y+=4){ctx.fillStyle=y%8===0?'#fff':'#000';ctx.fillRect(0,y,OUT_W,2);}
+
+            // INVERT FLASH (every 8 bars downbeat)
+            if (jjInvert) {
+              ctx.globalCompositeOperation='difference';
+              ctx.globalAlpha=0.92; ctx.fillStyle='#ffffff';
+              ctx.fillRect(0,0,OUT_W,OUT_H);
+              ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=1;
+            }
+
+            // STROBE (double-flash on heavy drop)
+            if (jjStrobeOn) {
+              ctx.globalAlpha=0.45; ctx.fillStyle='#ffffff';
+              ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
+            }
+
+            // COLOR FLASH OVERLAY
+            if (jjFlashAlpha > 0.01) {
+              const flashColor = jjPalette[jjLastBeat % jjPalette.length];
+              ctx.globalAlpha = jjFlashAlpha * 0.65;
+              ctx.fillStyle = flashColor;
+              ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
+            }
+
+            // GLITCH BLOCK — horizontal slice offset (B-SYNC / break dutch style)
+            if (jjGlitchBlock && jjGlitchBlock.timer > 0) {
+              const gb = jjGlitchBlock;
+              const alpha = Math.min(1, gb.timer * 3);
+              ctx.globalAlpha = alpha * 0.85;
+              try {
+                ctx.drawImage(canvas, 0, gb.y, OUT_W, gb.h, gb.ox, gb.y, OUT_W, gb.h);
+                // Second slice offset opposite
+                ctx.drawImage(canvas, 0, gb.y+gb.h*0.3, OUT_W, gb.h*0.4, -gb.ox*0.5, gb.y+gb.h*0.3, OUT_W, gb.h*0.4);
+              } catch(e){}
               ctx.globalAlpha=1;
             }
-            const vig=ctx.createRadialGradient(OUT_W/2,OUT_H/2,OUT_H*0.25,OUT_W/2,OUT_H/2,OUT_H*0.85);
-            vig.addColorStop(0,'rgba(0,0,0,0)'); vig.addColorStop(1,'rgba(0,0,0,0.55)');
+
+            // SCANLINE SWEEP (downbeat to downbeat)
+            const scanAlpha = 0.06;
+            ctx.globalAlpha = scanAlpha;
+            for (let sy2=jjScanlineY%4; sy2<OUT_H; sy2+=4) {
+              ctx.fillStyle = sy2%8===0 ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.02)';
+              ctx.fillRect(0,sy2,OUT_W,2);
+            }
+            ctx.globalAlpha=1;
+
+            // VIGNETTE — colored on drop, dark on break
+            const vigColor = jjDropActive
+              ? jjPalette[jjLastBeat%2] + '44'
+              : 'rgba(0,0,0,0.6)';
+            const vig = ctx.createRadialGradient(OUT_W/2,OUT_H/2,OUT_H*0.22, OUT_W/2,OUT_H/2,OUT_H*0.85);
+            vig.addColorStop(0,'rgba(0,0,0,0)');
+            vig.addColorStop(1, vigColor);
             ctx.fillStyle=vig; ctx.fillRect(0,0,OUT_W,OUT_H);
+
+            // EDGE GLOW — pulsing colored border on drop
+            if (jjDropActive && jjFlashAlpha > 0.1) {
+              const edgeW = 18;
+              const edgeColor = jjPalette[jjLastBeat % jjPalette.length];
+              ctx.globalAlpha = jjFlashAlpha * 0.8;
+              const eg = ctx.createLinearGradient(0,0,OUT_W,0);
+              eg.addColorStop(0, edgeColor); eg.addColorStop(0.5,'transparent'); eg.addColorStop(1, edgeColor);
+              ctx.fillStyle=eg;
+              ctx.fillRect(0,0,edgeW,OUT_H); ctx.fillRect(OUT_W-edgeW,0,edgeW,OUT_H);
+              const eg2 = ctx.createLinearGradient(0,0,0,OUT_H);
+              eg2.addColorStop(0,edgeColor); eg2.addColorStop(0.5,'transparent'); eg2.addColorStop(1,edgeColor);
+              ctx.fillStyle=eg2;
+              ctx.fillRect(0,0,OUT_W,edgeW); ctx.fillRect(0,OUT_H-edgeW,OUT_W,edgeW);
+              ctx.globalAlpha=1;
+            }
+
+            // DIAGONAL GRADIENT SWEEP (Jungle Dutch style)
             if (jjLastBeat%2===0) {
-              ctx.globalAlpha=0.12;
-              const eg=ctx.createLinearGradient(0,0,OUT_W,OUT_H);
-              eg.addColorStop(0,jjPalette[0]); eg.addColorStop(0.5,'transparent'); eg.addColorStop(1,jjPalette[3]);
-              ctx.fillStyle=eg; ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
+              ctx.globalAlpha=0.09;
+              const dg=ctx.createLinearGradient(0,0,OUT_W,OUT_H);
+              dg.addColorStop(0,jjPalette[0]); dg.addColorStop(0.5,'transparent'); dg.addColorStop(1,jjPalette[3]);
+              ctx.fillStyle=dg; ctx.fillRect(0,0,OUT_W,OUT_H); ctx.globalAlpha=1;
             }
           }
 
@@ -895,13 +1040,27 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               const boxW=Math.min(maxW+padX*2,OUT_W*0.92),boxH=shown.length*lineH+padY*2;
               const boxX=(OUT_W-boxW)/2,boxY=OUT_H*0.80-boxH;
               if(IS_JJ){
-                const jjY=OUT_H*0.55;
-                ctx.globalAlpha=1; ctx.lineJoin='round';
+                // JJ subtitle: large, center-screen, beat-synced color + outline + shadow glow
+                const jjY = OUT_H * 0.52;
+                const beatPhase = jjLastBeat % jjPalette.length;
+                const fillC  = jjFlashAlpha > 0.25 ? '#ffffff' : jjPalette[beatPhase];
+                const outC1  = '#000000';
+                const outC2  = jjPalette[(beatPhase+2) % jjPalette.length];
+                ctx.lineJoin='round'; ctx.textAlign='center';
                 shown.forEach((ln,i)=>{
-                  const y=jjY+i*lineH;
-                  ctx.strokeStyle='#000'; ctx.lineWidth=fontSize*0.18; ctx.strokeText(ln,OUT_W/2,y);
-                  ctx.lineWidth=fontSize*0.08; ctx.strokeStyle=jjLastBeat%2===0?'#ff0080':'#00f5ff'; ctx.strokeText(ln,OUT_W/2,y);
-                  ctx.fillStyle=jjFlashAlpha>0.3?'#ffffff':jjPalette[1]; ctx.fillText(ln,OUT_W/2,y);
+                  const y = jjY + i*lineH;
+                  // Shadow glow
+                  ctx.shadowColor=outC2; ctx.shadowBlur=22;
+                  // Thick black outline
+                  ctx.strokeStyle=outC1; ctx.lineWidth=fontSize*0.22;
+                  ctx.strokeText(ln, OUT_W/2, y);
+                  // Thin colored outline
+                  ctx.strokeStyle=outC2; ctx.lineWidth=fontSize*0.09;
+                  ctx.strokeText(ln, OUT_W/2, y);
+                  // Fill
+                  ctx.globalAlpha=1; ctx.fillStyle=fillC;
+                  ctx.fillText(ln, OUT_W/2, y);
+                  ctx.shadowBlur=0;
                 });
               } else {
                 ctx.globalAlpha=0.82; ctx.fillStyle='#000';
@@ -1473,24 +1632,61 @@ function createSyntheticBeatBuffer(audioCtx, durationSec, bpm, style='jd') {
 
   // ════════════════════════════════════════════════════════
   if (style === 'jd') {
-    // JEDAG JEDUG — Jungle Dutch: brass stab + double kick
-    const bassNotes = [55,55,73.4,82.4,61.7,55,65.4,73.4];
-    const brassNotes = [220,277.2,220,246.9,185,220,246.9,185];
+    // JUNGLE DUTCH / INDO BOUNCE — referensi: RAJACUAN Indo Bounce & Bassline, Break Dutch
+    // Ciri: brass stab "dut-dut", double kick brutal, bass bounce, riser tiap 8 bar
+    const bassSeq   = [55,55,73.4,82.4,61.7,55,65.4,73.4,  55,55,82.4,73.4,65.4,55,61.7,82.4];
+    const brassSeq  = [220,277.2,220,246.9,185,220,246.9,185, 246.9,220,277.2,220,185,246.9,220,185];
+    const bounceSeq = [110,110,146.8,164.8,123.5,110,130.8,146.8]; // mid bass bounce layer
+
     for (let b=0; b<totalBeats; b++) {
-      const t = b*beatSec, bi = b%4, bar4 = Math.floor(b/4)%8;
-      if (bar4===7&&bi===0) riser(t, beatSec*4);
-      if (bi===0){kick(t,180,22);kick(t+beatSec*0.5,160,25);}
-      if (bi===1){kick(t,170,22);kick(t+beatSec*0.25,150,28);}
-      if (bi===2) kick(t,180,22);
-      if (bi===3){kick(t,175,22);kick(t+beatSec*0.75,155,30);}
-      if (bi===1||bi===3) snare(t);
-      hihat(t, bar4>=4&&bi%2===1);
-      hihat(t+beatSec*0.5);
-      if (bar4>=4){hihat(t+beatSec*0.25);hihat(t+beatSec*0.75);}
-      if (bi===0||bi===2) brass(t+beatSec*0.5, brassNotes[b%8]);
-      if (bar4>=4&&(bi===1||bi===3)) brass(t+beatSec*0.25, brassNotes[(b+4)%8]*1.5, 0.08);
-      bass808(t, bassNotes[b%8], beatSec*0.88);
-      if (bar4>=4) bass808(t+beatSec*0.5, bassNotes[(b+4)%8]*0.75, beatSec*0.38);
+      const t = b*beatSec, bi = b%4;
+      const bar4  = Math.floor(b/4)%8;
+      const bar8  = Math.floor(b/4)%16;
+      const isDrop = bar8 < 12; // 12 bars drop, 4 bars break
+
+      // Riser sebelum drop kembali
+      if (bar8===15&&bi===0) riser(t, beatSec*4);
+
+      if (isDrop) {
+        // Double kick Jungle Dutch (signature: kick di 1, kick+kick di offbeat)
+        kick(t, 185, 22, 55);                              // downbeat kick
+        kick(t+beatSec*0.5, 165, 26, 50);                  // half beat kick
+        if (bi===0||bi===2) kick(t+beatSec*0.25, 155, 30, 48); // extra offbeat
+        if (bi===1||bi===3) kick(t+beatSec*0.75, 160, 28, 48); // variation
+
+        // Snare + clap combo on 2 & 4
+        if (bi===1||bi===3) { snare(t, 18, 0.7); clap(t+0.005); }
+
+        // Hi-hat 16th rapat (Indo Bounce style)
+        for (let s=0; s<4; s++) hihat(t+s*beatSec/4, s===1||s===3, s===0?0.30:0.18);
+        if (bar4>=4) for (let s=0; s<8; s++) hihat(t+s*beatSec/8, false, 0.13); // double-time
+
+        // BRASS STAB — ciri utama Jungle Dutch "dut-dut"
+        if (bi===0) {
+          brass(t+beatSec*0.5, brassSeq[b%16], 0.10);
+          brass(t+beatSec*0.75, brassSeq[(b+8)%16]*1.5, 0.07);
+        }
+        if (bi===2) brass(t, brassSeq[(b+4)%16], 0.09);
+        if (bar4>=4&&(bi===1||bi===3)) {
+          brass(t+beatSec*0.25, brassSeq[(b+2)%16], 0.08);
+          brass(t+beatSec*0.5, brassSeq[(b+6)%16]*1.25, 0.06);
+        }
+
+        // Bass bounce layer (Indo Bounce signature — bass "pantul")
+        bass808(t, bassSeq[b%16], beatSec*0.55);
+        bass808(t+beatSec*0.5, bounceSeq[b%8]*0.5, beatSec*0.40, true); // slide bounce
+        if (bar4>=4) {
+          bass808(t+beatSec*0.25, bounceSeq[(b+4)%8]*0.75, beatSec*0.25);
+          bass808(t+beatSec*0.75, bassSeq[(b+8)%16]*0.5, beatSec*0.22);
+        }
+
+      } else {
+        // BREAK section — sparse, hanya kick + hihat + bass pelan
+        if (bi===0||bi===2) kick(t, 165, 22, 50);
+        if (bi===1||bi===3) snare(t, 15, 0.5);
+        hihat(t, false, 0.2); hihat(t+beatSec*0.5, false, 0.15);
+        bass808(t, bassSeq[b%16]*0.5, beatSec*1.5);
+      }
     }
 
   } else if (style === 'phonk') {

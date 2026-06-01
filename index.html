@@ -961,10 +961,12 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         const FPS = 30, frameDur = 1000/FPS;
         let lastFrameAt = 0, rafHandle = null;
         let recordingStartTime = null; // wall-clock time when recording actually began
+        let audioStartOffset = 0; // offset audio mulai (loopStart dari ref/custom)
 
         const drawFrame = (now) => {
           rafHandle = requestAnimationFrame(drawFrame);
           if (now - lastFrameAt < frameDur - 1) return;
+          const frameDeltaSec = Math.min((now - lastFrameAt) / 1000, 0.1); // delta waktu per frame, max 100ms
           lastFrameAt = now;
           if (recordingStartTime === null) recordingStartTime = now;
           // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
@@ -987,7 +989,9 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
                 ? (loopEnd - loopStart)
                 : (USE_JJ_REF_BEATS ? (_jjRefAudioBuffer ? _jjRefAudioBuffer.duration - loopStart : 60)
                                     : (_customMusikBuffer ? _customMusikBuffer.duration - loopStart : 60));
-              const musikPos = elapsed % loopDur;
+              // Audio diputar mulai dari loopStart, beats[] relatif ke loopStart (firstDownbeat)
+              // Jadi musikPos harus dihitung sebagai posisi dalam loop, dimulai dari 0 = loopStart
+              const musikPos = loopDur > 0 ? elapsed % loopDur : elapsed;
               // Find beat index from real beat array
               beatIdx = 0;
               for (let bi2 = 0; bi2 < beats.length; bi2++) {
@@ -1007,7 +1011,21 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             // On new BAR (every 4 beats) — trigger special effects
             if (barIdx !== jjLastBar) {
               jjLastBar = barIdx;
-              jjDropActive = barIdx % 8 < 4; // alternate drop/break every 4 bars
+              // Jika ada video referensi, gunakan energi & dynRange untuk tentukan drop/break
+              if (_useJJRef && _jjRefStyle) {
+                const energy = _jjRefStyle.avgEnergy || 0.6;
+                const dynRange = _jjRefStyle.dynRange || 0.4;
+                // Energy tinggi + dynRange tinggi = banyak drop section
+                // Pola: makin besar dynRange, makin sering berganti drop/break
+                const dropBarsLen = dynRange > 0.5 ? 2 : (dynRange > 0.3 ? 4 : 6);
+                jjDropActive = (barIdx % (dropBarsLen * 2)) < dropBarsLen;
+                // Jika energy sangat tinggi (>0.72), hampir selalu drop
+                if (energy > 0.72) jjDropActive = barIdx % 6 < 5;
+                // Jika energy rendah (<0.35), lebih banyak break
+                if (energy < 0.35) jjDropActive = barIdx % 6 < 2;
+              } else {
+                jjDropActive = barIdx % 8 < 4; // default: alternate drop/break every 4 bars
+              }
               jjDropTimer = JJ_BEAT * 4;
               // Invert flash every 8 bars
               if (barIdx % 8 === 0) { jjInvert = true; jjInvertTimer = 0.08; }
@@ -1079,21 +1097,25 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
               jjShakeY += (Math.random()-0.5)*4;
             }
 
-            // Decay all values
+            // Decay all values — semua berbasis frameDeltaSec agar frame-rate independent
             // Flash decay rate: faster = punchier (from cloned profile if active)
-            const _decayRate = (_useJJRef && _jjRefStyle) ? _jjRefStyle.flashDecay : 0.075;
-            jjFlashAlpha  = Math.max(0, jjFlashAlpha - _decayRate);
-            jjShakeX     *= 0.48; jjShakeY *= 0.48;
-            jjZoom       += (1.0 - jjZoom) * 0.22;
-            jjRgbShift    = Math.max(0, jjRgbShift - 1.4);
-            jjSkewX      *= 0.6;
-            jjRotate     *= 0.6;
-            jjWarpStrength = Math.max(0, jjWarpStrength - 0.06);
-            jjScanlineY   = (jjScanlineY + 8) % OUT_H;
-            jjInvertTimer = Math.max(0, jjInvertTimer - 0.016);
+            // flashDecay dalam profil = proporsi per beat, konversi ke per-detik
+            const _decayRatePerBeat = (_useJJRef && _jjRefStyle) ? _jjRefStyle.flashDecay : 0.075;
+            // flashDecay profil = nilai 0..1 habis dalam ~(1/flashDecay) beat, konversi ke per-detik
+            const _decayPerSec = _decayRatePerBeat * JJ_BPM / 60 * 8; // ~8x lebih cepat dari interval beat
+            jjFlashAlpha  = Math.max(0, jjFlashAlpha  - _decayPerSec * frameDeltaSec);
+            const shakeDecay = Math.pow(0.48, frameDeltaSec * 30); // 0.48^(dt*30) agar sama di 30fps
+            jjShakeX     *= shakeDecay; jjShakeY *= shakeDecay;
+            jjZoom       += (1.0 - jjZoom) * Math.min(1, 0.22 * frameDeltaSec * 30);
+            jjRgbShift    = Math.max(0, jjRgbShift    - 1.4 * frameDeltaSec * 30);
+            jjSkewX      *= Math.pow(0.6, frameDeltaSec * 30);
+            jjRotate     *= Math.pow(0.6, frameDeltaSec * 30);
+            jjWarpStrength = Math.max(0, jjWarpStrength - 0.06 * frameDeltaSec * 30);
+            jjScanlineY   = (jjScanlineY + Math.round(8 * frameDeltaSec * 30)) % OUT_H;
+            jjInvertTimer = Math.max(0, jjInvertTimer - frameDeltaSec);
             if (jjInvertTimer <= 0) jjInvert = false;
             if (jjGlitchBlock) {
-              jjGlitchBlock.timer = Math.max(0, jjGlitchBlock.timer - 0.033);
+              jjGlitchBlock.timer = Math.max(0, jjGlitchBlock.timer - frameDeltaSec);
               if (jjGlitchBlock.timer <= 0) jjGlitchBlock = null;
             }
             jjDropTimer = Math.max(0, jjDropTimer - 0.033);
@@ -2927,7 +2949,10 @@ function getGayaPromptExtra() {
   const trackName = _useCustomMusik ? ('Musik Custom ('+(_customMusikFile?_customMusikFile.name:'?')+')') : (_selectedTrack ? _selectedTrack.name : 'Jedag Jedug Original');
   const genre = _useCustomMusik ? 'Custom Upload' : (_selectedTrack ? _selectedTrack.genre : 'Jungle Dutch');
   const bpm = _useJJRef ? _jjRefBpm : (_useCustomMusik ? _customMusikBpm : (_selectedTrack ? _selectedTrack.bpm : 140));
-  const isSlow = !_useCustomMusik && !_useJJRef && _selectedTrack && _selectedTrack.style === 'slowbass';
+  // isSlow: pakai energi referensi kalau ada, fallback ke track style
+  const isSlow = _useJJRef && _jjRefStyle
+    ? (_jjRefStyle.avgEnergy < 0.35 || _jjRefStyle.profileKey === 'slowbass' || _jjRefStyle.profileKey === 'cinematic')
+    : (!_useCustomMusik && !_useJJRef && _selectedTrack && _selectedTrack.style === 'slowbass');
 
   // Extra context jika ada video JJ referensi
   let refExtra = '';

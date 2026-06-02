@@ -913,7 +913,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
                   ? new MediaStream([canvasStream.getVideoTracks()[0], audioTracks[0]])
                   : canvasStream;
                 beginJJRecording(combinedStream);
-              }, 80);
+              }, 20);
             });
             return; // Keluar dari try block — recording dilanjut di beginJJRecording
 
@@ -973,7 +973,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           if (now - lastFrameAt < frameDur - 1) return;
           const frameDeltaSec = Math.min((now - lastFrameAt) / 1000, 0.1); // delta waktu per frame, max 100ms
           lastFrameAt = now;
-          if (recordingStartTime === null) recordingStartTime = now;
+          // recordingStartTime sudah di-set di doStartRec, tidak perlu set ulang di sini
           // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
           const wallElapsed = (now - recordingStartTime) / 1000;
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
@@ -1373,7 +1373,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         let stopTimer = null;
         let totalStallMs = 0;
         let stallStart = null;
-        const BASE_EXTRA = IS_JJ ? 2000 : 2500; // Normal mode lebih toleran
+        const BASE_EXTRA = IS_JJ ? 800 : 1000; // Dikurangi untuk menghilangkan delay di akhir klip
         let recActualStartWall = null; // waktu wall-clock saat rec.start() dipanggil
 
         const scheduleStop = (extraMs = 0) => {
@@ -1439,7 +1439,11 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         // JJ mode: video sudah play dari luar, tapi seek ke safeStart dulu
         const doStartRec = () => {
           recActualStartWall = performance.now();
+          recordingStartTime = recActualStartWall; // Set tepat saat rec.start() — bukan di frame pertama
+          // Gambar frame pertama langsung sebelum rec.start() supaya tidak ada frame kosong di awal
+          try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
           rec.start(100);
+          lastFrameAt = recActualStartWall; // sinkronisasi frame loop ke waktu start
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();
         };

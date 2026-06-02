@@ -977,12 +977,13 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
           const wallElapsed = (now - recordingStartTime) / 1000;
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
-          // Normal mode: pakai wall clock murni supaya tidak freeze saat video stall di awal
+          // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
           // JJ mode: tetap prefer videoElapsed jika video sudah berjalan
-          // Kedua mode: prefer videoElapsed jika video sudah berjalan, fallback ke wallElapsed
-          // Ini mencegah elapsed maju terlalu cepat sebelum video.currentTime ter-update
+          // Normal mode: pakai wall clock murni — tidak ada jump/freeze saat video stall
           const elapsed  = Math.min(
-            Math.max(0, videoElapsed > 0.05 ? videoElapsed : wallElapsed),
+            Math.max(0, IS_JJ
+              ? (videoElapsed > 0.05 ? videoElapsed : wallElapsed)  // JJ: prefer video time
+              : wallElapsed),                                         // Normal: murni wall clock
             requestedDur
           );
           const progress = Math.min(1, elapsed / requestedDur);
@@ -1376,7 +1377,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         let stopTimer = null;
         let totalStallMs = 0;
         let stallStart = null;
-        const BASE_EXTRA = IS_JJ ? 800 : 1000; // Dikurangi untuk menghilangkan delay di akhir klip
+        const BASE_EXTRA = IS_JJ ? 800 : 400; // Normal mode: 400ms cukup untuk flush encoder
         let recActualStartWall = null; // waktu wall-clock saat rec.start() dipanggil
 
         const scheduleStop = (extraMs = 0) => {
@@ -1385,7 +1386,9 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           // yang bisa belum update saat baru seek/play
           const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
           const remaining = Math.max(0, (requestedDur - elapsed) * 1000);
-          const delay = remaining + BASE_EXTRA + extraMs + totalStallMs;
+          // Normal mode: wall clock sudah track stall, tidak perlu tambah totalStallMs lagi
+          const stallPad = IS_JJ ? totalStallMs : 0;
+          const delay = remaining + BASE_EXTRA + extraMs + stallPad;
           stopTimer = setTimeout(() => {
             try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
           }, delay);
@@ -1436,7 +1439,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
           if (elapsed < requestedDur - 1.5) return; // terlalu awal, biarkan timer normal
           if (stopTimer) clearTimeout(stopTimer);
-          setTimeout(() => { try { rec.stop(); } catch(e){} }, 500);
+          const flushDelay = IS_JJ ? 500 : 200; // Normal mode flush lebih cepat
+          setTimeout(() => { try { rec.stop(); } catch(e){} }, flushDelay);
         }, { once: true });
 
         // Mulai recorder setelah video benar-benar render frame di safeStart
@@ -1460,11 +1464,11 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             video.removeEventListener('timeupdate', onFirstFrame);
             doStartRec();
           };
-          // Fallback: kalau timeupdate tidak muncul dalam 300ms, mulai saja
+          // Fallback: kalau timeupdate tidak muncul dalam 150ms, mulai saja
           const fallbackTimer = setTimeout(() => {
             video.removeEventListener('timeupdate', onFirstFrame);
             if (!timeupdateFired) { timeupdateFired = true; doStartRec(); }
-          }, 300);
+          }, 150);
           video.addEventListener('timeupdate', onFirstFrame, { once: true });
           // Kalau timeupdate sudah langsung tersedia (video sudah buffered), mulai segera
           if (video.currentTime >= safeStart - 0.1 && !video.paused) {

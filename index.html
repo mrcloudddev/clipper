@@ -1443,7 +1443,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           setTimeout(() => { try { rec.stop(); } catch(e){} }, flushDelay);
         }, { once: true });
 
-        // Mulai recorder setelah video benar-benar render frame di safeStart
+        // Mulai recorder saat video sudah di posisi safeStart
+        // Normal mode: video di-pause di safeStart, draw frame, start rec, lalu play — tidak ada gap
         const doStartRec = () => {
           recActualStartWall = performance.now();
           recordingStartTime = recActualStartWall;
@@ -1452,28 +1453,43 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           lastFrameAt = recActualStartWall;
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();
+          // Normal mode: video dipause sebelumnya oleh startAfterFirstFrame, resume di sini
+          // JJ mode: video sudah playing, tidak perlu play() lagi
+          if (!IS_JJ && video.paused) {
+            video.play().catch(() => {});
+          }
         };
 
-        // Tunggu timeupdate pertama setelah play() agar video.currentTime sudah di posisi safeStart
-        // Ini menghilangkan delay di Normal mode di mana video masih "catching up" saat play() resolve
+        // Normal mode: mulai recording tepat saat frame pertama di safeStart sudah siap di canvas
+        // Strategi: video sudah playing (dari play().then()), langsung tunggu canplay kalau belum ready
+        // lalu pause → draw frame → doStartRec (yang akan resume play)
         const startAfterFirstFrame = () => {
-          let timeupdateFired = false;
-          const onFirstFrame = () => {
-            if (timeupdateFired) return;
-            timeupdateFired = true;
-            video.removeEventListener('timeupdate', onFirstFrame);
+          if (!IS_JJ) {
+            let started = false;
+            const kickStart = () => {
+              if (started) return;
+              started = true;
+              // Pause video tepat di safeStart, draw frame, lalu record dimulai
+              // doStartRec akan memanggil video.play() lagi agar sinkron dengan rec.start()
+              video.pause();
+              try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
+              doStartRec();
+            };
+            // Jika frame sudah siap (readyState >= 2 = HAVE_CURRENT_DATA)
+            if (video.readyState >= 2) {
+              kickStart();
+            } else {
+              // Tunggu canplay — frame di posisi safeStart sudah di-decode
+              video.addEventListener('canplay', kickStart, { once: true });
+              // Fallback 250ms
+              setTimeout(() => {
+                video.removeEventListener('canplay', kickStart);
+                if (!started) kickStart();
+              }, 250);
+            }
+          } else {
+            // JJ mode: tetap gunakan alur asli, video sudah playing
             doStartRec();
-          };
-          // Fallback: kalau timeupdate tidak muncul dalam 150ms, mulai saja
-          const fallbackTimer = setTimeout(() => {
-            video.removeEventListener('timeupdate', onFirstFrame);
-            if (!timeupdateFired) { timeupdateFired = true; doStartRec(); }
-          }, 150);
-          video.addEventListener('timeupdate', onFirstFrame, { once: true });
-          // Kalau timeupdate sudah langsung tersedia (video sudah buffered), mulai segera
-          if (video.currentTime >= safeStart - 0.1 && !video.paused) {
-            clearTimeout(fallbackTimer);
-            onFirstFrame();
           }
         };
 

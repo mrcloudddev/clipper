@@ -979,9 +979,12 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
           // Normal mode: pakai wall clock murni supaya tidak freeze saat video stall di awal
           // JJ mode: tetap prefer videoElapsed jika video sudah berjalan
-          const elapsed  = IS_JJ
-            ? Math.min(Math.max(0, videoElapsed > 0.05 ? videoElapsed : wallElapsed), requestedDur)
-            : Math.min(wallElapsed, requestedDur);
+          // Kedua mode: prefer videoElapsed jika video sudah berjalan, fallback ke wallElapsed
+          // Ini mencegah elapsed maju terlalu cepat sebelum video.currentTime ter-update
+          const elapsed  = Math.min(
+            Math.max(0, videoElapsed > 0.05 ? videoElapsed : wallElapsed),
+            requestedDur
+          );
           const progress = Math.min(1, elapsed / requestedDur);
 
           // ── JJ BEAT SYNC — per quarter/half/beat/bar ─────────────
@@ -1436,18 +1439,41 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           setTimeout(() => { try { rec.stop(); } catch(e){} }, 500);
         }, { once: true });
 
-        // JJ mode: video sudah play dari luar, tapi seek ke safeStart dulu
+        // Mulai recorder setelah video benar-benar render frame di safeStart
         const doStartRec = () => {
           recActualStartWall = performance.now();
-          recordingStartTime = recActualStartWall; // Set tepat saat rec.start() — bukan di frame pertama
-          // Gambar frame pertama langsung sebelum rec.start() supaya tidak ada frame kosong di awal
+          recordingStartTime = recActualStartWall;
           try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
           rec.start(100);
-          lastFrameAt = recActualStartWall; // sinkronisasi frame loop ke waktu start
+          lastFrameAt = recActualStartWall;
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();
         };
-        video.play().then(doStartRec).catch(e => {
+
+        // Tunggu timeupdate pertama setelah play() agar video.currentTime sudah di posisi safeStart
+        // Ini menghilangkan delay di Normal mode di mana video masih "catching up" saat play() resolve
+        const startAfterFirstFrame = () => {
+          let timeupdateFired = false;
+          const onFirstFrame = () => {
+            if (timeupdateFired) return;
+            timeupdateFired = true;
+            video.removeEventListener('timeupdate', onFirstFrame);
+            doStartRec();
+          };
+          // Fallback: kalau timeupdate tidak muncul dalam 300ms, mulai saja
+          const fallbackTimer = setTimeout(() => {
+            video.removeEventListener('timeupdate', onFirstFrame);
+            if (!timeupdateFired) { timeupdateFired = true; doStartRec(); }
+          }, 300);
+          video.addEventListener('timeupdate', onFirstFrame, { once: true });
+          // Kalau timeupdate sudah langsung tersedia (video sudah buffered), mulai segera
+          if (video.currentTime >= safeStart - 0.1 && !video.paused) {
+            clearTimeout(fallbackTimer);
+            onFirstFrame();
+          }
+        };
+
+        video.play().then(startAfterFirstFrame).catch(e => {
           console.warn('play():', e);
           doStartRec(); // Fallback: start anyway
         });

@@ -865,10 +865,9 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         const canvasStream = canvas.captureStream(30);
 
         try {
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
           if (IS_JJ_AUDIO && ((typeof _selectedTrack !== 'undefined' && _selectedTrack) || _useJJRef || _useCustomMusik)) {
-            // JJ mode — musik dari contoh JJ / custom / synthetic; video stays muted
+            // JJ mode — buat audioCtx di sini
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             video.muted = true;
             const dest = audioCtx.createMediaStreamDestination();
 
@@ -920,19 +919,38 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           } else {
             // Normal mode — use original video audio
             video.muted = false;
-            const dest = audioCtx.createMediaStreamDestination();
-            const srcNode = audioCtx.createMediaElementSource(video);
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            srcNode.connect(dest);
-            srcNode.connect(audioCtx.destination);
-            const audioTrack = dest.stream.getAudioTracks()[0];
-            combinedStream = audioTrack
-              ? new MediaStream([canvasStream.getVideoTracks()[0], audioTrack])
-              : canvasStream;
+            try {
+              audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+              const dest = audioCtx.createMediaStreamDestination();
+              const srcNode = audioCtx.createMediaElementSource(video);
+              if (audioCtx.state === 'suspended') audioCtx.resume();
+              srcNode.connect(dest);
+              srcNode.connect(audioCtx.destination);
+              const audioTrack = dest.stream.getAudioTracks()[0];
+              combinedStream = audioTrack
+                ? new MediaStream([canvasStream.getVideoTracks()[0], audioTrack])
+                : canvasStream;
+            } catch(audioErr) {
+              console.warn('Audio via AudioContext gagal, fallback ke video.captureStream:', audioErr);
+              // Fallback: coba ambil audio langsung dari video element via captureStream
+              try {
+                const videoStream = video.captureStream ? video.captureStream(30) : (video.mozCaptureStream ? video.mozCaptureStream(30) : null);
+                if (videoStream) {
+                  const audioTracks = videoStream.getAudioTracks();
+                  combinedStream = audioTracks.length > 0
+                    ? new MediaStream([canvasStream.getVideoTracks()[0], audioTracks[0]])
+                    : canvasStream;
+                } else {
+                  combinedStream = canvasStream;
+                }
+              } catch(e2) {
+                console.warn('Fallback audio juga gagal, video-only:', e2);
+                combinedStream = canvasStream;
+              }
+            }
           }
-        } catch(audioErr) {
-          console.warn('Audio setup failed, continuing video-only:', audioErr);
-          video.muted = false;
+        } catch(outerAudioErr) {
+          console.warn('Audio setup outer error:', outerAudioErr);
           combinedStream = canvasStream;
         }
 
@@ -973,8 +991,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           if (now - lastFrameAt < frameDur - 1) return;
           const frameDeltaSec = Math.min((now - lastFrameAt) / 1000, 0.1); // delta waktu per frame, max 100ms
           lastFrameAt = now;
-          // recordingStartTime sudah di-set di doStartRec, tidak perlu set ulang di sini
-          // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
+          // Guard: jika recordingStartTime belum di-set, inisialisasi sekarang
+          if (!recordingStartTime) recordingStartTime = now;
           const wallElapsed = (now - recordingStartTime) / 1000;
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
           // Use wall-clock elapsed for Normal mode to avoid video.currentTime lag artefacts
@@ -1160,12 +1178,14 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
             try{ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);}catch(e){}
             ctx.globalAlpha=1; ctx.filter='none';
           } else {
-            // Normal mode: simpan frame terakhir, pakai sebagai fallback saat stall
+            // Normal mode: selalu coba draw dari video — jangan freeze berdasarkan stall flag
+            // Stall hanya memengaruhi audio keepalive, bukan visual
             try {
-              if (!_videoIsStalled && video.readyState >= 2) {
+              if (video.readyState >= 2) {
                 ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);
                 if (_lastFrameCtx) _lastFrameCtx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);
               } else if (_lastFrameCanvas) {
+                // readyState < 2: pakai cached frame (video belum ada data)
                 ctx.drawImage(_lastFrameCanvas,0,0,OUT_W,OUT_H);
               } else {
                 ctx.drawImage(video,sx,sy,sw,sh,0,0,OUT_W,OUT_H);
@@ -1386,8 +1406,8 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           // yang bisa belum update saat baru seek/play
           const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
           const remaining = Math.max(0, (requestedDur - elapsed) * 1000);
-          // Normal mode: wall clock sudah track stall, tidak perlu tambah totalStallMs lagi
-          const stallPad = IS_JJ ? totalStallMs : 0;
+          // Normal mode: tambah padding kecil untuk stall recovery
+          const stallPad = IS_JJ ? totalStallMs : Math.min(totalStallMs, 2000);
           const delay = remaining + BASE_EXTRA + extraMs + stallPad;
           stopTimer = setTimeout(() => {
             try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
@@ -1408,21 +1428,19 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
         video.addEventListener('waiting', () => {
           stallStart = performance.now();
           if (!IS_JJ) {
-            _videoIsStalled = true;
+            // Tidak set _videoIsStalled di sini — biarkan frame tetap update dari video
             if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
-            _stallRetryTimer = setTimeout(tryResumeVideo, 350);
+            _stallRetryTimer = setTimeout(tryResumeVideo, 300);
           }
         });
         video.addEventListener('stalled', () => {
           if (!stallStart) stallStart = performance.now();
           if (!IS_JJ) {
-            _videoIsStalled = true;
             if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
-            _stallRetryTimer = setTimeout(tryResumeVideo, 350);
+            _stallRetryTimer = setTimeout(tryResumeVideo, 300);
           }
         });
         video.addEventListener('playing', () => {
-          if (!IS_JJ) _videoIsStalled = false;
           if (_stallRetryTimer) { clearTimeout(_stallRetryTimer); _stallRetryTimer = null; }
           if (stallStart !== null) {
             totalStallMs += performance.now() - stallStart;
@@ -1431,7 +1449,7 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
           }
         });
         video.addEventListener('canplay', () => {
-          if (!IS_JJ) _videoIsStalled = false;
+          // video siap — tidak perlu action khusus
         });
         // Jika video ended sebelum stop timer — langsung stop recorder
         // Guard: jangan stop terlalu awal kalau klip belum sampai safeEnd

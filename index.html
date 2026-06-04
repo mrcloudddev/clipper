@@ -1589,32 +1589,116 @@ function dropFile(e) {
   else toast('Harap upload file video!');
 }
 
+function showFormatError(fname, tip) {
+  // Hapus dialog lama kalau ada
+  const old = document.getElementById('fmtErrDialog');
+  if (old) old.remove();
+
+  const ext = (fname||'').split('.').pop().toUpperCase();
+  const dialog = document.createElement('div');
+  dialog.id = 'fmtErrDialog';
+  dialog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px';
+  dialog.innerHTML = `
+    <div style="background:#12121e;border:1px solid rgba(239,68,68,0.4);border-radius:16px;padding:24px;max-width:400px;width:100%">
+      <div style="font-size:22px;margin-bottom:10px;text-align:center">⚠️</div>
+      <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700;color:#f87171;margin-bottom:6px;text-align:center">Format Video Tidak Didukung</div>
+      <div style="font-size:13px;color:rgba(240,237,232,0.65);text-align:center;margin-bottom:16px;line-height:1.5">
+        File <strong style="color:#fbbf24">${fname}</strong> (${ext}) tidak bisa dibaca browser.<br>
+        ${tip || 'Browser hanya mendukung <strong style="color:#a78bfa">MP4 H.264</strong> atau WebM.'}
+      </div>
+      <div style="background:rgba(124,58,237,0.1);border:0.5px solid rgba(167,139,250,0.2);border-radius:10px;padding:14px;margin-bottom:16px">
+        <div style="font-size:11px;color:rgba(240,237,232,0.4);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px">💡 Cara konversi ke MP4 H.264</div>
+        <div style="font-size:12px;color:rgba(240,237,232,0.7);line-height:1.8">
+          <b style="color:#c4b5fd">Online gratis:</b> <a href="https://www.freeconvert.com/video-converter" target="_blank" style="color:#a78bfa;text-decoration:none">freeconvert.com</a> atau <a href="https://cloudconvert.com/video-converter" target="_blank" style="color:#a78bfa;text-decoration:none">cloudconvert.com</a><br>
+          <b style="color:#c4b5fd">HP Android:</b> App "Video Converter" di Play Store<br>
+          <b style="color:#c4b5fd">iPhone:</b> Rekam dalam format "Paling Kompatibel" di Pengaturan Kamera<br>
+          <b style="color:#c4b5fd">PC/Mac:</b> HandBrake (gratis) → pilih preset "Fast 1080p30"
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="document.getElementById('fmtErrDialog').remove()" style="flex:1;padding:10px;border-radius:8px;border:0.5px solid rgba(255,255,255,0.1);background:transparent;color:rgba(240,237,232,0.5);font-size:13px;cursor:pointer">Tutup</button>
+        <label for="fInput" onclick="document.getElementById('fmtErrDialog').remove()" style="flex:2;padding:10px;border-radius:8px;border:none;background:#7c3aed;color:#fff;font-size:13px;font-weight:600;cursor:pointer;text-align:center;display:flex;align-items:center;justify-content:center">📁 Pilih File Lain</label>
+      </div>
+    </div>`;
+  document.body.appendChild(dialog);
+}
+
 function handleFile(f) {
   if(!f) return;
 
-  // Cek apakah browser bisa play format ini
+  const ext = f.name.split('.').pop().toLowerCase();
+
+  // Test decode nyata: buat video element dan coba load
   const testVid = document.createElement('video');
-  const canPlay = testVid.canPlayType(f.type);
-  if (f.type && canPlay === '') {
-    // Coba tetap lanjut kalau ekstensi umum (browser kadang salah report)
-    const ext = f.name.split('.').pop().toLowerCase();
-    if (!['mp4','webm','mov','avi','mkv','m4v'].includes(ext)) {
-      toast(`❌ Format "${f.type}" tidak didukung browser. Gunakan MP4 H.264.`);
+  const testUrl = URL.createObjectURL(f);
+  testVid.preload = 'metadata';
+  testVid.muted = true;
+  testVid.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px';
+  document.body.appendChild(testVid);
+
+  const cleanupTest = () => {
+    try { document.body.removeChild(testVid); } catch(e) {}
+    try { URL.revokeObjectURL(testUrl); } catch(e) {}
+  };
+
+  testVid.addEventListener('loadedmetadata', () => {
+    cleanupTest();
+    // Format OK — lanjut proses
+    _videoFile = f;
+    _videoExt = ext || 'mp4';
+    const bUrl = URL.createObjectURL(f);
+    const dz = document.getElementById('dropzone');
+    if (dz) {
+      dz.innerHTML = `<video src="${bUrl}" style="width:100%;max-height:120px;border-radius:8px;object-fit:contain" muted playsinline preload="metadata"></video>
+      <div style="font-size:12px;color:rgba(240,237,232,0.6);margin-top:6px">✅ ${f.name} · ${(f.size/1024/1024).toFixed(1)} MB</div>
+      <div style="font-size:11px;color:rgba(240,237,232,0.35);margin-top:4px">Klik Proses → untuk mulai analisis AI</div>`;
+    }
+    beginProcess({name:f.name, source:'upload', meta:`${(f.size/1024/1024).toFixed(1)} MB · ${f.type||'video'}`, thumb:'📁', hasFile: true});
+  }, { once: true });
+
+  // Fallback timeout: kalau tidak ada error/metadata dalam 8 detik
+  const testTimeout = setTimeout(() => {
+    cleanupTest();
+    // Kalau format tidak jelas, coba tetap lanjut
+    if (!['mp4','webm','m4v'].includes(ext)) {
+      showFormatError(f.name, 'Video tidak merespons — kemungkinan format tidak didukung browser. Gunakan <strong style="color:#a78bfa">MP4 H.264</strong>.');
       return;
     }
-  }
+    // MP4/WebM yang lambat load — tetap lanjut
+    _videoFile = f;
+    _videoExt = ext || 'mp4';
+    const bUrl = URL.createObjectURL(f);
+    const dz = document.getElementById('dropzone');
+    if (dz) {
+      dz.innerHTML = `<video src="${bUrl}" style="width:100%;max-height:120px;border-radius:8px;object-fit:contain" muted playsinline preload="metadata"></video>
+      <div style="font-size:12px;color:rgba(240,237,232,0.6);margin-top:6px">✅ ${f.name} · ${(f.size/1024/1024).toFixed(1)} MB</div>
+      <div style="font-size:11px;color:rgba(240,237,232,0.35);margin-top:4px">Klik Proses → untuk mulai analisis AI</div>`;
+    }
+    beginProcess({name:f.name, source:'upload', meta:`${(f.size/1024/1024).toFixed(1)} MB · ${f.type||'video'}`, thumb:'📁', hasFile: true});
+  }, 8000);
 
-  _videoFile = f;
-  _videoExt = f.name.split('.').pop().toLowerCase() || 'mp4';
-  // Tampilkan preview thumbnail di dropzone
-  const bUrl = URL.createObjectURL(f);
-  const dz = document.getElementById('dropzone');
-  if (dz) {
-    dz.innerHTML = `<video src="${bUrl}" style="width:100%;max-height:120px;border-radius:8px;object-fit:contain" muted playsinline preload="metadata"></video>
-    <div style="font-size:12px;color:rgba(240,237,232,0.6);margin-top:6px">✅ ${f.name} · ${(f.size/1024/1024).toFixed(1)} MB</div>
-    <div style="font-size:11px;color:rgba(240,237,232,0.35);margin-top:4px">Klik Proses → untuk mulai analisis AI</div>`;
-  }
-  beginProcess({name:f.name, source:'upload', meta:`${(f.size/1024/1024).toFixed(1)} MB · ${f.type||'video'}`, thumb:'📁', hasFile: true});
+  const handleTestError = () => {
+    clearTimeout(testTimeout);
+    cleanupTest();
+    const code = testVid.error ? testVid.error.code : 0;
+    // code 3 = decode error, code 4 = format tidak didukung
+    let tip = '';
+    if (ext === 'mov' || ext === 'hevc') {
+      tip = 'File MOV dari iPhone sering pakai codec <strong style="color:#f87171">HEVC/H.265</strong> yang tidak didukung browser. Konversi ke MP4 H.264 dulu.';
+    } else if (ext === 'avi') {
+      tip = 'Format AVI biasanya menggunakan codec lama yang tidak didukung browser. Konversi ke <strong style="color:#a78bfa">MP4 H.264</strong>.';
+    } else if (ext === 'mkv') {
+      tip = 'MKV tidak didukung semua browser. Konversi ke <strong style="color:#a78bfa">MP4 H.264</strong>.';
+    } else {
+      tip = 'Pastikan video menggunakan codec <strong style="color:#a78bfa">H.264</strong> (bukan H.265/HEVC/AV1).';
+    }
+    showFormatError(f.name, tip);
+  };
+
+  testVid.onerror = handleTestError;
+  testVid.addEventListener('loadedmetadata', () => clearTimeout(testTimeout), { once: true });
+
+  testVid.src = testUrl;
 }
 
 function startProcess() {
@@ -1890,7 +1974,12 @@ async function cutAndDownload(clip) {
     toast('✓ Video klip berhasil diunduh!');
   } catch(e) {
     hideModal();
-    toast('❌ Gagal: ' + e.message);
+    const msg = e.message || '';
+    if (msg.includes('decode') || msg.includes('didukung') || msg.includes('H.264') || msg.includes('format')) {
+      showFormatError(_videoFile ? _videoFile.name : 'video', 'Pastikan file menggunakan codec <strong style="color:#a78bfa">H.264</strong>. File MOV/HEVC dari iPhone dan AVI sering menyebabkan error ini.');
+    } else {
+      toast('❌ Gagal: ' + msg);
+    }
   }
 }
 

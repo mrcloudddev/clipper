@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KlipAI — Potong Klip Viral Otomatis (v17)</title>
+<!-- mp4-muxer UMD bundle → window.Mp4Muxer -->
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js"></script>
 </head>
 <body>
 <style>
@@ -768,11 +770,16 @@ function fallbackSubs(hookText, durationSec) {
 //   Kedua jalur pakai canvas render sehingga video HEVC/AV1/apapun bisa dibaca
 //   asal browser bisa decode (hardware decode diaktifkan secara default di Chrome 94+).
 
-// ── Utility: load mp4-muxer dari CDN (lazy, sekali saja) ─────────
+// ── Utility: ambil mp4-muxer dari window (di-load via <script> tag di head) ──
 let _mp4MuxerModule = null;
 async function loadMp4Muxer() {
   if (_mp4MuxerModule) return _mp4MuxerModule;
-  // Coba import dari CDN
+  // UMD bundle dari CDN sudah di-load di <head> → tersedia sebagai window.Mp4Muxer
+  if (typeof window.Mp4Muxer !== 'undefined') {
+    _mp4MuxerModule = window.Mp4Muxer;
+    return _mp4MuxerModule;
+  }
+  // Fallback: dynamic import jika UMD belum tersedia
   try {
     const mod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.mjs');
     _mp4MuxerModule = mod;
@@ -830,7 +837,9 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
 
 // ─── JALUR 1: WebCodecs + mp4-muxer ──────────────────────────────
 async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, OUT_W, OUT_H, VBR, mp4Mod) {
-  const { Muxer, ArrayBufferTarget } = mp4Mod;
+  // mp4Mod bisa berupa window.Mp4Muxer (UMD) atau ES module
+  const Muxer = mp4Mod.Muxer;
+  const ArrayBufferTarget = mp4Mod.ArrayBufferTarget;
 
   const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
   const requestedDur = Math.max(1, endSec - startSec);

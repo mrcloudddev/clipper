@@ -980,47 +980,57 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     audioEncoder = null;
   }
 
-  // ── Seek ke start ────────────────────────────────────────────────
+  // ── Seek ke safeStart + tunggu canplaythrough ────────────────────
+  // Penting: JANGAN play() dulu sebelum seek selesai dan buffer siap.
+  // Kalau play() dipanggil sebelum seek, decoder mulai dari awal → gap besar di rVFC.
   await new Promise(res => {
-    const t = setTimeout(res, 3000);
-    video.addEventListener('seeked', () => { clearTimeout(t); res(); }, { once: true });
+    let done = false;
+    const finish = () => { if (done) return; done = true; res(); };
+    const t = setTimeout(finish, 5000);
+
+    video.addEventListener('seeked', () => {
+      clearTimeout(t);
+      // Tunggu buffer siap (readyState >= 3) sebelum lanjut
+      if (video.readyState >= 3) { finish(); return; }
+      const onCanPlay = () => finish();
+      video.addEventListener('canplay', onCanPlay, { once: true });
+      setTimeout(finish, 1000); // fallback 1s
+    }, { once: true });
+
     video.currentTime = safeStart;
   });
 
   setModalBar(15, 'Memulai encoding...');
 
   // ── Render via play() + requestVideoFrameCallback (rVFC) ─────────
-  // Jauh lebih cepat dari seek-per-frame karena video jalan normal (real-time atau lebih cepat).
-  // rVFC dipanggil tepat saat frame baru tersedia dari decoder — tidak ada busy-wait.
   let frameCount = 0;
   const totalFrames = Math.ceil(actualDur * FPS);
 
   await new Promise((res, rej) => {
     const hasRVFC = typeof video.requestVideoFrameCallback === 'function';
     let rafHandle  = null;
-    let lastDrawnTime = -1;
+    let lastDrawnTimeSec = -1;
+    let encodingStarted  = false;
 
-    // Cache canvas terakhir untuk interpolasi (fill frame jika ada gap)
+    // Canvas cache untuk interpolasi gap
     const lastFrameCache = document.createElement('canvas');
     lastFrameCache.width = OUT_W; lastFrameCache.height = OUT_H;
-    const lastFrameCtx2 = lastFrameCache.getContext('2d', { alpha: false });
-    let lastEncodedTimeSec = -1;
+    const lastFrameCacheCtx = lastFrameCache.getContext('2d', { alpha: false });
+    let lastEncodedElapsed = -1;
+    const frameDurSec = 1 / FPS;
 
     const encodeOneFrame = (fromCache, elapsed) => {
       const frameTimeUs = Math.round(elapsed * 1_000_000);
       if (!fromCache) {
-        // Draw fresh dari video
         if (IS_JJ) {
           _applyJJCanvasEffects(ctx, video, sx, sy, sw, sh, OUT_W, OUT_H, elapsed, subtitleOn, timedSubs);
         } else {
           try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
           if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
         }
-        // Simpan ke cache
-        lastFrameCtx2.drawImage(canvas, 0, 0);
+        lastFrameCacheCtx.drawImage(canvas, 0, 0); // simpan ke cache
       } else {
-        // Pakai frame cache (interpolasi)
-        ctx.drawImage(lastFrameCache, 0, 0);
+        ctx.drawImage(lastFrameCache, 0, 0); // gunakan cache
       }
       const vf = new VideoFrame(canvas, {
         timestamp: frameTimeUs,
@@ -1029,81 +1039,104 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       videoEncoder.encode(vf, { keyFrame: (frameCount % (FPS * 2) === 0) });
       vf.close();
       frameCount++;
-      lastEncodedTimeSec = elapsed;
+      lastEncodedElapsed = elapsed;
     };
 
-    const encodeCurrentFrame = (videoTimeSec) => {
-      const elapsed = Math.max(0, videoTimeSec - safeStart);
+    const processVideoTime = (vtSec) => {
+      // Guard: skip frame sebelum safeStart (bisa terjadi kalau seek tidak presisi)
+      if (vtSec < safeStart - 0.05) return;
 
-      // Interpolasi: jika gap sejak frame terakhir > 1.5 frame (50ms), isi dengan frame duplikat
-      if (lastEncodedTimeSec >= 0) {
-        const gapSec = elapsed - lastEncodedTimeSec;
-        const frameDurSec = 1 / FPS;
-        if (gapSec > frameDurSec * 1.5) {
-          const fillCount = Math.min(Math.floor(gapSec / frameDurSec) - 1, 4); // max 4 fill frames
+      // Guard: stop jika melewati safeEnd
+      if (vtSec >= safeEnd - 0.02) {
+        if (rafHandle) cancelAnimationFrame(rafHandle);
+        video.pause();
+        res();
+        return;
+      }
+
+      const elapsed = Math.max(0, vtSec - safeStart);
+
+      // Interpolasi gap: isi frame yang hilang dengan frame cache
+      if (lastEncodedElapsed >= 0) {
+        const gap = elapsed - lastEncodedElapsed;
+        if (gap > frameDurSec * 1.6) {
+          // Isi maksimal 8 frame (267ms worth) agar tidak over-compensate gap besar
+          const fillCount = Math.min(Math.floor(gap / frameDurSec) - 1, 8);
           for (let fi = 1; fi <= fillCount; fi++) {
-            const fillElapsed = lastEncodedTimeSec + fi * frameDurSec;
-            if (fillElapsed < elapsed) encodeOneFrame(true, fillElapsed);
+            const fe = lastEncodedElapsed + fi * frameDurSec;
+            if (fe < elapsed - 0.01) encodeOneFrame(true, fe);
           }
         }
       }
 
-      // Encode frame asli
       encodeOneFrame(false, elapsed);
+      encodingStarted = true;
 
-      // Update progress bar
       const pct = Math.min(75, 15 + Math.round((elapsed / actualDur) * 60));
       setModalBar(pct, `Encoding frame ${frameCount}/${totalFrames}...`);
     };
 
-    // ── rVFC path (Chrome/Edge, dipanggil tiap frame baru dari decoder) ──
+    // ── rVFC path ─────────────────────────────────────────────────
     const onRVFC = (now, meta) => {
       const vt = meta.mediaTime;
-      if (vt >= safeEnd - 0.04 || frameCount >= totalFrames) {
+
+      // Skip kalau mediaTime belum sampai safeStart (terjadi di awal play)
+      if (vt < safeStart - 0.05) {
+        video.requestVideoFrameCallback(onRVFC);
+        return;
+      }
+
+      if (vt >= safeEnd - 0.02 || frameCount >= totalFrames) {
         video.pause();
         res();
         return;
       }
-      if (vt !== lastDrawnTime) {
-        lastDrawnTime = vt;
-        encodeCurrentFrame(vt);
+
+      if (vt !== lastDrawnTimeSec) {
+        lastDrawnTimeSec = vt;
+        processVideoTime(vt);
       }
       video.requestVideoFrameCallback(onRVFC);
     };
 
-    // ── rAF fallback (Firefox, Safari) ──
+    // ── rAF fallback ──────────────────────────────────────────────
     const onRAF = () => {
       const vt = video.currentTime;
-      if (vt >= safeEnd - 0.04 || frameCount >= totalFrames || video.ended) {
+      if (vt < safeStart - 0.05) { rafHandle = requestAnimationFrame(onRAF); return; }
+      if (vt >= safeEnd - 0.02 || frameCount >= totalFrames || video.ended) {
         video.pause();
         res();
         return;
       }
-      if (vt !== lastDrawnTime && video.readyState >= 2) {
-        lastDrawnTime = vt;
-        encodeCurrentFrame(vt);
+      if (vt !== lastDrawnTimeSec && video.readyState >= 2) {
+        lastDrawnTimeSec = vt;
+        processVideoTime(vt);
       }
       rafHandle = requestAnimationFrame(onRAF);
     };
 
-    // Mulai
-    video.muted = (audioCtx !== null) ? false : true;
-    const playP = video.play();
-    if (hasRVFC) {
-      video.requestVideoFrameCallback(onRVFC);
-    } else {
-      playP.then(() => { rafHandle = requestAnimationFrame(onRAF); })
-           .catch(() => { rafHandle = requestAnimationFrame(onRAF); });
-    }
-
-    // Safety timeout: kalau video stuck > durasi*2 + 10 detik
-    const safetyMs = (actualDur * 2 + 10) * 1000;
-    setTimeout(() => {
+    // Safety timeout
+    const safetyMs = (actualDur * 2 + 15) * 1000;
+    const safetyTimer = setTimeout(() => {
       if (rafHandle) cancelAnimationFrame(rafHandle);
       video.pause();
-      if (frameCount > 0) res(); // ada frame → lanjut
+      if (frameCount > 0) res();
       else rej(new Error('Timeout encoding — video tidak bisa diputar'));
     }, safetyMs);
+
+    // ── Mulai play — seek sudah selesai di atas ───────────────────
+    video.muted = (audioCtx !== null) ? false : true;
+    if (hasRVFC) {
+      // Register rVFC SEBELUM play() supaya tidak ada frame yang terlewat
+      video.requestVideoFrameCallback(onRVFC);
+    }
+    video.play()
+      .then(() => {
+        if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF);
+      })
+      .catch(() => {
+        if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF);
+      });
   });
 
   // Stop audio capture SEGERA — disconnect scriptNode supaya tidak capture audio ekstra

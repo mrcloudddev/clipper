@@ -929,6 +929,8 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
   let audioEncoder = null;
   let audioCtx = null;
   let audioProcessor = null;
+  let _wcScriptNode = null;  // untuk di-disconnect saat video stop
+  let _wcSrcNode = null;
 
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
@@ -941,6 +943,9 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     const srcNode = audioCtx.createMediaElementSource(video);
     const scriptNode = audioCtx.createScriptProcessor(4096, 2, 2);
     let audioTimestampUs = 0;
+    // Expose ke scope luar agar bisa di-disconnect tepat saat video stop
+    _wcScriptNode = scriptNode;
+    _wcSrcNode = srcNode;
 
     scriptNode.onaudioprocess = (e) => {
       if (audioEncoder && audioEncoder.state === 'configured') {
@@ -995,19 +1000,28 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     let rafHandle  = null;
     let lastDrawnTime = -1;
 
-    const encodeCurrentFrame = (videoTimeSec) => {
-      const elapsed   = Math.max(0, videoTimeSec - safeStart);
+    // Cache canvas terakhir untuk interpolasi (fill frame jika ada gap)
+    const lastFrameCache = document.createElement('canvas');
+    lastFrameCache.width = OUT_W; lastFrameCache.height = OUT_H;
+    const lastFrameCtx2 = lastFrameCache.getContext('2d', { alpha: false });
+    let lastEncodedTimeSec = -1;
+
+    const encodeOneFrame = (fromCache, elapsed) => {
       const frameTimeUs = Math.round(elapsed * 1_000_000);
-
-      // Draw ke canvas
-      if (IS_JJ) {
-        _applyJJCanvasEffects(ctx, video, sx, sy, sw, sh, OUT_W, OUT_H, elapsed, subtitleOn, timedSubs);
+      if (!fromCache) {
+        // Draw fresh dari video
+        if (IS_JJ) {
+          _applyJJCanvasEffects(ctx, video, sx, sy, sw, sh, OUT_W, OUT_H, elapsed, subtitleOn, timedSubs);
+        } else {
+          try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
+          if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
+        }
+        // Simpan ke cache
+        lastFrameCtx2.drawImage(canvas, 0, 0);
       } else {
-        try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
-        if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
+        // Pakai frame cache (interpolasi)
+        ctx.drawImage(lastFrameCache, 0, 0);
       }
-
-      // Encode
       const vf = new VideoFrame(canvas, {
         timestamp: frameTimeUs,
         duration: Math.round(1_000_000 / FPS),
@@ -1015,6 +1029,27 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       videoEncoder.encode(vf, { keyFrame: (frameCount % (FPS * 2) === 0) });
       vf.close();
       frameCount++;
+      lastEncodedTimeSec = elapsed;
+    };
+
+    const encodeCurrentFrame = (videoTimeSec) => {
+      const elapsed = Math.max(0, videoTimeSec - safeStart);
+
+      // Interpolasi: jika gap sejak frame terakhir > 1.5 frame (50ms), isi dengan frame duplikat
+      if (lastEncodedTimeSec >= 0) {
+        const gapSec = elapsed - lastEncodedTimeSec;
+        const frameDurSec = 1 / FPS;
+        if (gapSec > frameDurSec * 1.5) {
+          const fillCount = Math.min(Math.floor(gapSec / frameDurSec) - 1, 4); // max 4 fill frames
+          for (let fi = 1; fi <= fillCount; fi++) {
+            const fillElapsed = lastEncodedTimeSec + fi * frameDurSec;
+            if (fillElapsed < elapsed) encodeOneFrame(true, fillElapsed);
+          }
+        }
+      }
+
+      // Encode frame asli
+      encodeOneFrame(false, elapsed);
 
       // Update progress bar
       const pct = Math.min(75, 15 + Math.round((elapsed / actualDur) * 60));
@@ -1071,7 +1106,13 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     }, safetyMs);
   });
 
-  // Stop video & audio
+  // Stop audio capture SEGERA — disconnect scriptNode supaya tidak capture audio ekstra
+  if (_wcScriptNode) {
+    try { _wcScriptNode.disconnect(); } catch(e) {}
+    try { _wcScriptNode.onaudioprocess = null; } catch(e) {}
+  }
+  if (_wcSrcNode) { try { _wcSrcNode.disconnect(); } catch(e) {} }
+  // Stop video
   video.pause();
   if (audioCtx) { try { audioCtx.close(); } catch(e) {} }
 

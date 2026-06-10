@@ -1048,9 +1048,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
 
       // Guard: stop jika melewati safeEnd
       if (vtSec >= safeEnd - 0.02) {
-        if (rafHandle) cancelAnimationFrame(rafHandle);
-        video.pause();
-        res();
+        finish(true);
         return;
       }
 
@@ -1080,15 +1078,14 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     const onRVFC = (now, meta) => {
       const vt = meta.mediaTime;
 
-      // Skip kalau mediaTime belum sampai safeStart (terjadi di awal play)
+      // Skip kalau mediaTime belum sampai safeStart
       if (vt < safeStart - 0.05) {
         video.requestVideoFrameCallback(onRVFC);
         return;
       }
 
       if (vt >= safeEnd - 0.02 || frameCount >= totalFrames) {
-        video.pause();
-        res();
+        finish(true);
         return;
       }
 
@@ -1096,16 +1093,16 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
         lastDrawnTimeSec = vt;
         processVideoTime(vt);
       }
-      video.requestVideoFrameCallback(onRVFC);
+      if (!settled) video.requestVideoFrameCallback(onRVFC);
     };
 
     // ── rAF fallback ──────────────────────────────────────────────
     const onRAF = () => {
+      if (settled) return;
       const vt = video.currentTime;
       if (vt < safeStart - 0.05) { rafHandle = requestAnimationFrame(onRAF); return; }
       if (vt >= safeEnd - 0.02 || frameCount >= totalFrames || video.ended) {
-        video.pause();
-        res();
+        finish(true);
         return;
       }
       if (vt !== lastDrawnTimeSec && video.readyState >= 2) {
@@ -1115,28 +1112,45 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       rafHandle = requestAnimationFrame(onRAF);
     };
 
+    // ── Wrap res/rej agar safetyTimer selalu di-clear ──────────────
+    let settled = false;
+    const finish = (ok, errMsg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(safetyTimer);
+      if (rafHandle) cancelAnimationFrame(rafHandle);
+      video.pause();
+      if (ok) res();
+      else rej(new Error(errMsg || 'Encoding gagal'));
+    };
+
     // Safety timeout
     const safetyMs = (actualDur * 2 + 15) * 1000;
     const safetyTimer = setTimeout(() => {
-      if (rafHandle) cancelAnimationFrame(rafHandle);
-      video.pause();
-      if (frameCount > 0) res();
-      else rej(new Error('Timeout encoding — video tidak bisa diputar'));
+      if (frameCount > 0) finish(true);
+      else finish(false, 'Timeout encoding — video tidak jalan atau autoplay diblokir');
     }, safetyMs);
 
     // ── Mulai play — seek sudah selesai di atas ───────────────────
     video.muted = (audioCtx !== null) ? false : true;
-    if (hasRVFC) {
-      // Register rVFC SEBELUM play() supaya tidak ada frame yang terlewat
-      video.requestVideoFrameCallback(onRVFC);
-    }
-    video.play()
-      .then(() => {
-        if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF);
-      })
-      .catch(() => {
-        if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF);
-      });
+
+    // Fallback: kalau play() ditolak autoplay policy, paksa muted lalu retry
+    const startPlay = () => {
+      if (hasRVFC) video.requestVideoFrameCallback(onRVFC);
+      video.play()
+        .then(() => {
+          if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF);
+        })
+        .catch(() => {
+          // Autoplay ditolak → paksa muted dan retry
+          console.warn('play() rejected, retrying muted');
+          video.muted = true;
+          video.play()
+            .then(() => { if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF); })
+            .catch(e => finish(false, 'Video tidak bisa diputar: ' + e.message));
+        });
+    };
+    startPlay();
   });
 
   // Stop audio capture SEGERA — disconnect scriptNode supaya tidak capture audio ekstra

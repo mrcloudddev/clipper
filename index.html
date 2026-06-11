@@ -855,11 +855,11 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
   const videoSrc = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.src = videoSrc;
-  video.muted = false; // audio pipeline akan di-setup via createMediaElementSource
+  video.muted = true; // HARUS muted agar Chrome izinkan autoplay — di-unmute setelah AudioContext siap
   video.preload = 'auto';
   video.playsInline = true;
-  video.crossOrigin = 'anonymous';
-  video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:1px;height:1px;top:-9999px;left:-9999px';
+  // crossOrigin TIDAK diset — blob URL tidak butuh dan justru block decode di Chrome
+  video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:2px;height:2px;top:0;left:0';
   document.body.appendChild(video);
 
   const cleanup = () => {
@@ -946,7 +946,8 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     // Expose ke scope luar agar bisa di-disconnect tepat saat video stop
     _wcScriptNode = scriptNode;
     _wcSrcNode = srcNode;
-    // audio pipeline sudah siap (video.muted=false sudah di-set saat elemen dibuat)
+    // audio pipeline sudah siap — sekarang baru unmute agar audio mengalir
+    video.muted = false;
 
     scriptNode.onaudioprocess = (e) => {
       if (audioEncoder && audioEncoder.state === 'configured') {
@@ -1091,7 +1092,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
         return;
       }
 
-      if (vt !== lastDrawnTimeSec) {
+      if (vt !== lastDrawnTimeSec || lastDrawnTimeSec < 0) {
         lastDrawnTimeSec = vt;
         processVideoTime(vt);
       }
@@ -1126,11 +1127,11 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       else rej(new Error(errMsg || 'Encoding gagal'));
     };
 
-    // Safety timeout
-    const safetyMs = (actualDur * 2 + 15) * 1000;
+    // Safety timeout — diberi ruang 3x durasi + 30s buffer
+    const safetyMs = (actualDur * 3 + 30) * 1000;
     const safetyTimer = setTimeout(() => {
-      if (frameCount > 0) finish(true);
-      else finish(false, 'Timeout encoding — video tidak jalan atau autoplay diblokir');
+      if (frameCount > 5) finish(true); // ada frame cukup → simpan hasil
+      else finish(false, `Encoding timeout (${frameCount} frame). Coba kualitas lebih rendah atau segmen lebih pendek.`);
     }, safetyMs);
 
     // ── Mulai play — seek sudah selesai di atas ───────────────────
@@ -1141,14 +1142,26 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       if (hasRVFC) video.requestVideoFrameCallback(onRVFC);
       video.play()
         .then(() => {
-          if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF);
+          if (!hasRVFC) {
+            rafHandle = requestAnimationFrame(onRAF);
+          } else {
+            // Watchdog: kalau rVFC tidak menghasilkan frame dalam 2s, fallback ke rAF
+            setTimeout(() => {
+              if (!settled && frameCount === 0) {
+                console.warn('rVFC tidak menghasilkan frame, fallback ke rAF');
+                rafHandle = requestAnimationFrame(onRAF);
+              }
+            }, 2000);
+          }
         })
         .catch(() => {
           // Autoplay ditolak → paksa muted dan retry
           console.warn('play() rejected, retrying muted');
           video.muted = true;
           video.play()
-            .then(() => { if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF); })
+            .then(() => { if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF); else {
+              setTimeout(() => { if (!settled && frameCount === 0) rafHandle = requestAnimationFrame(onRAF); }, 2000);
+            }})
             .catch(e => finish(false, 'Video tidak bisa diputar: ' + e.message));
         });
     };

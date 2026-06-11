@@ -682,7 +682,7 @@ async function confirmCut() {
 let _sharedAudioCtx = null;
 function getAudioCtx() {
   if(!_sharedAudioCtx || _sharedAudioCtx.state === 'closed') {
-    _sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    _sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
   }
   if(_sharedAudioCtx.state === 'suspended') _sharedAudioCtx.resume();
   return _sharedAudioCtx;
@@ -855,7 +855,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
   const videoSrc = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.src = videoSrc;
-  video.muted = true; // sementara muted — akan di-unmute setelah audio pipeline siap
+  video.muted = false; // audio pipeline akan di-setup via createMediaElementSource
   video.preload = 'auto';
   video.playsInline = true;
   video.crossOrigin = 'anonymous';
@@ -941,14 +941,12 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: 44100, numberOfChannels: 2, bitrate: 128000 });
 
     const srcNode = audioCtx.createMediaElementSource(video);
-    const scriptNode = audioCtx.createScriptProcessor(4096, 2, 2);
+    const scriptNode = audioCtx.createScriptProcessor(8192, 2, 2);
     let audioTimestampUs = 0;
     // Expose ke scope luar agar bisa di-disconnect tepat saat video stop
     _wcScriptNode = scriptNode;
     _wcSrcNode = srcNode;
-    // FIX: unmute dulu SEBELUM createMediaElementSource sudah terlanjur, tapi
-    // pastikan audio pipeline siap dengan langsung set muted=false di sini
-    video.muted = false;
+    // audio pipeline sudah siap (video.muted=false sudah di-set saat elemen dibuat)
 
     scriptNode.onaudioprocess = (e) => {
       if (audioEncoder && audioEncoder.state === 'configured') {
@@ -989,15 +987,16 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
   await new Promise(res => {
     let done = false;
     const finish = () => { if (done) return; done = true; res(); };
-    const t = setTimeout(finish, 5000);
+    const t = setTimeout(finish, 10000);
 
     video.addEventListener('seeked', () => {
       clearTimeout(t);
-      // Tunggu buffer siap (readyState >= 3) sebelum lanjut
+      // Tunggu buffer siap (readyState >= 4 = HAVE_ENOUGH_DATA) sebelum lanjut
+      if (video.readyState >= 4) { finish(); return; }
       if (video.readyState >= 3) { finish(); return; }
       const onCanPlay = () => finish();
-      video.addEventListener('canplay', onCanPlay, { once: true });
-      setTimeout(finish, 1000); // fallback 1s
+      video.addEventListener('canplaythrough', onCanPlay, { once: true });
+      setTimeout(finish, 2000); // fallback 2s
     }, { once: true });
 
     video.currentTime = safeStart;
@@ -1062,7 +1061,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
         const gap = elapsed - lastEncodedElapsed;
         if (gap > frameDurSec * 1.6) {
           // Isi maksimal 8 frame (267ms worth) agar tidak over-compensate gap besar
-          const fillCount = Math.min(Math.floor(gap / frameDurSec) - 1, 8);
+          const fillCount = Math.min(Math.floor(gap / frameDurSec) - 1, 30);
           for (let fi = 1; fi <= fillCount; fi++) {
             const fe = lastEncodedElapsed + fi * frameDurSec;
             if (fe < elapsed - 0.01) encodeOneFrame(true, fe);
@@ -1108,7 +1107,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
         finish(true);
         return;
       }
-      if (vt !== lastDrawnTimeSec && video.readyState >= 2) {
+      if (vt !== lastDrawnTimeSec && video.readyState >= 3) {
         lastDrawnTimeSec = vt;
         processVideoTime(vt);
       }
@@ -1481,7 +1480,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
           const remaining = Math.max(0, (requestedDur - elapsed) * 1000);
           const stallPad = IS_JJ ? totalStallMs : Math.min(totalStallMs, 2000);
-          const delay = remaining + (IS_JJ ? 800 : 400) + extraMs + stallPad;
+          const delay = remaining + (IS_JJ ? 1200 : 600) + extraMs + stallPad;
           stopTimer = setTimeout(() => {
             try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
           }, delay);
@@ -1530,7 +1529,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           lastFrameAt = recActualStartWall - frameDur; // pastikan frame pertama langsung diproses
           // FIX: mulai rec.start() dulu, LALU drawFrame loop
           // (canvas sudah ada isinya dari frame yang digambar sebelum captureStream)
-          rec.start(33);
+          rec.start(200);
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();
           if (!IS_JJ && video.paused) video.play().catch(()=>{});
@@ -1550,7 +1549,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
             if (video.readyState >= 2) kickStart();
             else {
               video.addEventListener('canplay', kickStart, { once: true });
-              setTimeout(() => { video.removeEventListener('canplay', kickStart); if (!started) kickStart(); }, 200);
+              setTimeout(() => { video.removeEventListener('canplay', kickStart); if (!started) kickStart(); }, 500);
             }
           } else { doStartRec(); }
         };

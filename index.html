@@ -1318,7 +1318,14 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
     function startMRRecording(video, safeStart, safeEnd, requestedDur, sx, sy, sw, sh) {
       let combinedStream;
       let audioCtx = null;
+
+      // FIX: gambar frame pertama ke canvas DULU sebelum captureStream()
+      // agar video track tidak kosong saat MediaRecorder mulai
+      try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
       const canvasStream = canvas.captureStream(30);
+
+      // FIX: pastikan video track dari canvasStream benar-benar aktif
+      const canvasVideoTrack = canvasStream.getVideoTracks()[0];
 
       try {
         if (IS_JJ_AUDIO && ((typeof _selectedTrack !== 'undefined' && _selectedTrack) || USE_JJ_REF_BEATS || USE_CUSTOM_BEATS)) {
@@ -1357,7 +1364,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
             setTimeout(() => {
               const audioTracks = dest.stream.getAudioTracks();
               combinedStream = audioTracks.length > 0
-                ? new MediaStream([canvasStream.getVideoTracks()[0], audioTracks[0]])
+                ? new MediaStream([canvasVideoTrack, audioTracks[0]])
                 : canvasStream;
               beginRecording(combinedStream);
             }, 20);
@@ -1368,14 +1375,14 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           video.muted = false;
           try {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
             const dest = audioCtx.createMediaStreamDestination();
             const srcNode = audioCtx.createMediaElementSource(video);
-            if (audioCtx.state === 'suspended') audioCtx.resume();
             srcNode.connect(dest);
             srcNode.connect(audioCtx.destination);
             const audioTrack = dest.stream.getAudioTracks()[0];
             combinedStream = audioTrack
-              ? new MediaStream([canvasStream.getVideoTracks()[0], audioTrack])
+              ? new MediaStream([canvasVideoTrack, audioTrack])
               : canvasStream;
           } catch(audioErr) {
             console.warn('Audio via AudioContext gagal, fallback:', audioErr);
@@ -1384,7 +1391,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
               if (videoStream) {
                 const audioTracks = videoStream.getAudioTracks();
                 combinedStream = audioTracks.length > 0
-                  ? new MediaStream([canvasStream.getVideoTracks()[0], audioTracks[0]])
+                  ? new MediaStream([canvasVideoTrack, audioTracks[0]])
                   : canvasStream;
               } else { combinedStream = canvasStream; }
             } catch(e2) { combinedStream = canvasStream; }
@@ -1417,7 +1424,25 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
         }
 
-        // FIX: update _videoIsStalled berdasarkan readyState di setiap frame
+      function beginRecording(stream) {
+        let rec;
+        try { rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 }); }
+        catch(e) { try { rec = new MediaRecorder(stream, { mimeType }); } catch(e2) { rec = new MediaRecorder(stream); } }
+
+        const chunks = [];
+        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+        const FPS = 30, frameDur = 1000/FPS;
+        let lastFrameAt = 0, rafHandle = null;
+        let recordingStartTime = null;
+
+        let _lastFrameCanvas = null, _lastFrameCtx = null, _videoIsStalled = false;
+        if (!IS_JJ) {
+          _lastFrameCanvas = document.createElement('canvas');
+          _lastFrameCanvas.width = OUT_W; _lastFrameCanvas.height = OUT_H;
+          _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
+        }
+
         const drawFrame = (now) => {
           rafHandle = requestAnimationFrame(drawFrame);
           if (now - lastFrameAt < frameDur - 1) return;
@@ -1428,14 +1453,11 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           else if (!IS_JJ && video.readyState >= 2 && !video.paused) _videoIsStalled = false;
           const wallElapsed = (now - recordingStartTime) / 1000;
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
-          // FIX: pakai videoElapsed untuk semua mode agar audio/video sync,
-          // gunakan wallElapsed hanya sebagai fallback saat video belum mulai jalan
           const elapsed = Math.min(Math.max(0,
             videoElapsed > 0.05 ? videoElapsed : wallElapsed
           ), requestedDur);
 
           if (IS_JJ) {
-            // JJ effects dibawa dari original — simplified inline
             ctx.save();
             ctx.setTransform(1,0,0,1,0,0);
             try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
@@ -1450,6 +1472,12 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
               try { ctx.drawImage(_lastFrameCanvas, 0, 0); } catch(e) {}
             }
             if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
+          }
+
+          // FIX: paksa canvas track update — beberapa browser butuh requestFrame() eksplisit
+          const vTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
+          if (vTrack && typeof vTrack.requestFrame === 'function') {
+            try { vTrack.requestFrame(); } catch(e) {}
           }
         };
 
@@ -1518,9 +1546,10 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
         const doStartRec = () => {
           recActualStartWall = performance.now();
           recordingStartTime = recActualStartWall;
-          try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
+          lastFrameAt = recActualStartWall - frameDur; // pastikan frame pertama langsung diproses
+          // FIX: mulai rec.start() dulu, LALU drawFrame loop
+          // (canvas sudah ada isinya dari frame yang digambar sebelum captureStream)
           rec.start(33);
-          lastFrameAt = recActualStartWall;
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();
           if (!IS_JJ && video.paused) video.play().catch(()=>{});

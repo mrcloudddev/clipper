@@ -3,9 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KlipAI — Potong Klip Viral Otomatis (v17)</title>
-<!-- mp4-muxer UMD bundle → window.Mp4Muxer -->
-<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.js"></script>
+<title>KlipAI — Potong Klip Viral Otomatis (v18)</title>
 </head>
 <body>
 <style>
@@ -763,477 +761,38 @@ function fallbackSubs(hookText, durationSec) {
 }
 
 
-// ─── mp4-muxer + WebCodecs video cutter (semua codec, output MP4 asli) ─────
-// Strategi:
-//   1. Jika browser support VideoDecoder + VideoEncoder (WebCodecs) → output MP4 H.264
-//   2. Fallback ke MediaRecorder → output WebM
-//   Kedua jalur pakai canvas render sehingga video HEVC/AV1/apapun bisa dibaca
-//   asal browser bisa decode (hardware decode diaktifkan secara default di Chrome 94+).
 
-// ── Utility: ambil mp4-muxer dari window (di-load via <script> tag di head) ──
-let _mp4MuxerModule = null;
-async function loadMp4Muxer() {
-  if (_mp4MuxerModule) return _mp4MuxerModule;
-  // UMD bundle dari CDN sudah di-load di <head> → tersedia sebagai window.Mp4Muxer
-  if (typeof window.Mp4Muxer !== 'undefined') {
-    _mp4MuxerModule = window.Mp4Muxer;
-    return _mp4MuxerModule;
-  }
-  // Fallback: dynamic import jika UMD belum tersedia
-  try {
-    const mod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.mjs');
-    _mp4MuxerModule = mod;
-    return mod;
-  } catch(e) {
-    console.warn('mp4-muxer CDN gagal:', e);
-    return null;
-  }
-}
+// ── FFmpeg.wasm engine — potong video frame-accurate tanpa stall ──
+// Tidak bergantung pada real-time playback → hasil selalu mulus
+// FFmpeg.wasm v0.12 (single-thread, no SharedArrayBuffer required)
 
-// ── Cek apakah WebCodecs tersedia dan H.264 encode didukung ───────
-async function checkWebCodecsSupport() {
-  if (typeof VideoEncoder === 'undefined' || typeof VideoDecoder === 'undefined') return false;
-  try {
-    const support = await VideoEncoder.isConfigSupported({
-      codec: 'avc1.4d0028', // H.264 High Profile Level 4.0
-      width: 720, height: 1280,
-      bitrate: 4_000_000, framerate: 30
-    });
-    return support.supported === true;
-  } catch(e) { return false; }
-}
+let _ffmpegInstance = null;
+let _ffmpegLoading = null;
 
-// ── Fungsi utama: potong & encode video ───────────────────────────
-function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[], quality='720p') {
-  return new Promise(async (resolve, reject) => {
-    const qualityMap = {
-      '360p':  { w:360,  h:640,  vbr:1_200_000 },
-      '720p':  { w:720,  h:1280, vbr:4_000_000 },
-      '1080p': { w:1080, h:1920, vbr:8_000_000 },
-    };
-    const { w: OUT_W, h: OUT_H, vbr: VBR } = qualityMap[quality] || qualityMap['720p'];
+async function loadFFmpeg() {
+  if (_ffmpegInstance) return _ffmpegInstance;
+  if (_ffmpegLoading) return _ffmpegLoading;
 
-    // Cek apakah file punya duration yang bisa dibaca
-    // MediaRecorder WebM tidak punya duration header → WebCodecs tidak reliable
-    const hasDuration = await new Promise(res => {
-      const v = document.createElement('video');
-      v.preload = 'metadata';
-      v.src = URL.createObjectURL(file);
-      v.addEventListener('loadedmetadata', () => {
-        const ok = isFinite(v.duration) && v.duration > 0 && v.duration !== Infinity;
-        URL.revokeObjectURL(v.src);
-        res(ok);
-      }, { once: true });
-      v.addEventListener('error', () => { URL.revokeObjectURL(v.src); res(false); }, { once: true });
-      setTimeout(() => { URL.revokeObjectURL(v.src); res(false); }, 5000);
+  _ffmpegLoading = (async () => {
+    const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js');
+    const { fetchFile, toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
+
+    const ff = new FFmpeg();
+
+    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.9/dist/esm';
+    await ff.load({
+      coreURL:   await toBlobURL(`${baseURL}/ffmpeg-core.js`,   'text/javascript'),
+      wasmURL:   await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
     });
 
-    // Deteksi mode — skip WebCodecs jika duration tidak valid
-    const useWebCodecs = hasDuration && (await checkWebCodecsSupport());
-    const mp4Mod = useWebCodecs ? await loadMp4Muxer() : null;
+    _ffmpegInstance = { ff, fetchFile };
+    return _ffmpegInstance;
+  })();
 
-    if (useWebCodecs && mp4Mod) {
-      // ═══ JALUR 1: WebCodecs + mp4-muxer → MP4 H.264 asli ════════
-      try {
-        const result = await _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, OUT_W, OUT_H, VBR, mp4Mod);
-        resolve(result);
-        return;
-      } catch(wcErr) {
-        console.warn('WebCodecs path gagal, fallback ke MediaRecorder:', wcErr);
-        // Jatuh ke jalur 2
-      }
-    }
-
-    // ═══ JALUR 2: MediaRecorder (WebM VP9) ═══════════════════════
-    _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OUT_W, OUT_H, VBR)
-      .then(resolve).catch(reject);
-  });
+  return _ffmpegLoading;
 }
 
-// ─── JALUR 1: WebCodecs + mp4-muxer ──────────────────────────────
-async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, OUT_W, OUT_H, VBR, mp4Mod) {
-  // mp4Mod bisa berupa window.Mp4Muxer (UMD) atau ES module
-  const Muxer = mp4Mod.Muxer;
-  const ArrayBufferTarget = mp4Mod.ArrayBufferTarget;
-
-  const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-  const requestedDur = Math.max(1, endSec - startSec);
-  const FPS = 30;
-  const frameDur = 1 / FPS;
-
-  // Setup canvas
-  const canvas = document.createElement('canvas');
-  canvas.width = OUT_W; canvas.height = OUT_H;
-  const ctx = canvas.getContext('2d', { alpha: false });
-
-  // Setup video element
-  const videoSrc = URL.createObjectURL(file);
-  const video = document.createElement('video');
-  video.src = videoSrc;
-  video.muted = true; // HARUS muted agar Chrome izinkan autoplay — di-unmute setelah AudioContext siap
-  video.preload = 'auto';
-  video.playsInline = true;
-  // crossOrigin TIDAK diset — blob URL tidak butuh dan justru block decode di Chrome
-  video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:2px;height:2px;top:0;left:0';
-  document.body.appendChild(video);
-
-  const cleanup = () => {
-    try { document.body.removeChild(video); } catch(e) {}
-    video.src = '';
-    try { URL.revokeObjectURL(videoSrc); } catch(e) {}
-  };
-
-  // Tunggu metadata
-  await new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error('Timeout loadedmetadata')), 15000);
-    video.addEventListener('loadedmetadata', () => { clearTimeout(t); res(); }, { once: true });
-    video.addEventListener('error', () => { clearTimeout(t); rej(new Error('Video load error code ' + (video.error ? video.error.code : 0))); }, { once: true });
-    video.load();
-  });
-
-  // Dapat durasi nyata — MediaRecorder WebM sering tidak punya duration header
-  let videoDur = video.duration;
-  if (!isFinite(videoDur) || videoDur <= 0 || videoDur === Infinity) {
-    // Seek ke titik sangat jauh, browser akan clamp ke durasi nyata
-    await new Promise(res => {
-      let t = setTimeout(res, 5000);
-      video.addEventListener('seeked', () => { clearTimeout(t); res(); }, { once: true });
-      video.currentTime = 999999;
-    });
-    videoDur = isFinite(video.duration) && video.duration > 0 ? video.duration : null;
-  }
-  // Kalau durasi masih tidak valid, percaya saja pada endSec dari user/AI
-  // dan beri ruang buffer +2s agar tidak terpotong
-  const safeDur = (videoDur && isFinite(videoDur) && videoDur > endSec * 0.5)
-    ? videoDur
-    : endSec + 2;
-
-  const safeStart = Math.max(0, Math.min(startSec, safeDur - 0.5));
-  const safeEnd   = Math.min(endSec, safeDur);
-  if (safeEnd - safeStart <= 0) { cleanup(); throw new Error('Video lebih pendek dari durasi klip'); }
-  const actualDur = safeEnd - safeStart;
-
-  // Hitung crop/scale
-  const vw = video.videoWidth  || OUT_W;
-  const vh = video.videoHeight || OUT_H;
-  const targetRatio = OUT_W / OUT_H;
-  const srcRatio    = vw / vh;
-  let sx=0, sy=0, sw=vw, sh=vh;
-  if (srcRatio > targetRatio) { sw = Math.round(vh * targetRatio); sx = Math.round((vw-sw)/2); }
-  else                         { sh = Math.round(vw / targetRatio); sy = Math.round((vh-sh)/2); }
-
-  // Setup mp4-muxer
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({
-    target,
-    video: { codec: 'avc', width: OUT_W, height: OUT_H },
-    audio: { codec: 'aac', sampleRate: 44100, numberOfChannels: 2 },
-    fastStart: 'in-memory',
-  });
-
-  // Setup VideoEncoder
-  const codecStr = 'avc1.4d0028'; // H.264 High Profile Level 4.0
-  let encodedFrames = 0;
-  const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: e => console.error('VideoEncoder error:', e),
-  });
-  videoEncoder.configure({
-    codec: codecStr,
-    width: OUT_W, height: OUT_H,
-    bitrate: VBR,
-    framerate: FPS,
-    avc: { format: 'annexb' },
-    latencyMode: 'quality',
-  });
-
-  // Setup AudioEncoder + AudioContext
-  let audioEncoder = null;
-  let audioCtx = null;
-  let audioProcessor = null;
-  let _wcScriptNode = null;  // untuk di-disconnect saat video stop
-  let _wcSrcNode = null;
-
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
-    audioEncoder = new AudioEncoder({
-      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-      error: e => console.warn('AudioEncoder error (non-fatal):', e),
-    });
-    audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: 44100, numberOfChannels: 2, bitrate: 128000 });
-
-    const srcNode = audioCtx.createMediaElementSource(video);
-    const scriptNode = audioCtx.createScriptProcessor(8192, 2, 2);
-    let audioTimestampUs = 0;
-    // Expose ke scope luar agar bisa di-disconnect tepat saat video stop
-    _wcScriptNode = scriptNode;
-    _wcSrcNode = srcNode;
-    // audio pipeline sudah siap — sekarang baru unmute agar audio mengalir
-    video.muted = false;
-
-    scriptNode.onaudioprocess = (e) => {
-      if (audioEncoder && audioEncoder.state === 'configured') {
-        const left  = e.inputBuffer.getChannelData(0);
-        const right = e.inputBuffer.getChannelData(1).length ? e.inputBuffer.getChannelData(1) : left;
-        const frameData = new Float32Array(left.length * 2);
-        for (let i = 0; i < left.length; i++) {
-          frameData[i*2]   = left[i];
-          frameData[i*2+1] = right[i];
-        }
-        const audioFrame = new AudioData({
-          format: 'f32',
-          sampleRate: 44100,
-          numberOfFrames: left.length,
-          numberOfChannels: 2,
-          timestamp: audioTimestampUs,
-          data: frameData,
-        });
-        audioEncoder.encode(audioFrame);
-        audioFrame.close();
-        audioTimestampUs += Math.round((left.length / 44100) * 1_000_000);
-      }
-    };
-
-    srcNode.connect(scriptNode);
-    scriptNode.connect(audioCtx.destination);
-    // FIX: video.muted = false sudah di-set sebelum koneksi audio di atas
-  } catch(audioErr) {
-    console.warn('Audio WebCodecs setup gagal (video-only):', audioErr);
-    video.muted = true;
-    if (audioCtx) { try { audioCtx.close(); } catch(e) {} audioCtx = null; }
-    audioEncoder = null;
-  }
-
-  // ── Seek ke safeStart + tunggu canplaythrough ────────────────────
-  // Penting: JANGAN play() dulu sebelum seek selesai dan buffer siap.
-  // Kalau play() dipanggil sebelum seek, decoder mulai dari awal → gap besar di rVFC.
-  await new Promise(res => {
-    let done = false;
-    const finish = () => { if (done) return; done = true; res(); };
-    const t = setTimeout(finish, 10000);
-
-    video.addEventListener('seeked', () => {
-      clearTimeout(t);
-      // Tunggu buffer siap (readyState >= 4 = HAVE_ENOUGH_DATA) sebelum lanjut
-      if (video.readyState >= 4) { finish(); return; }
-      if (video.readyState >= 3) { finish(); return; }
-      const onCanPlay = () => finish();
-      video.addEventListener('canplaythrough', onCanPlay, { once: true });
-      setTimeout(finish, 2000); // fallback 2s
-    }, { once: true });
-
-    video.currentTime = safeStart;
-  });
-
-  setModalBar(15, 'Memulai encoding...');
-
-  // ── Render via play() + requestVideoFrameCallback (rVFC) ─────────
-  let frameCount = 0;
-  const totalFrames = Math.ceil(actualDur * FPS);
-
-  await new Promise((res, rej) => {
-    const hasRVFC = typeof video.requestVideoFrameCallback === 'function';
-    let rafHandle  = null;
-    let lastDrawnTimeSec = -1;
-    let encodingStarted  = false;
-
-    // Canvas cache untuk interpolasi gap
-    const lastFrameCache = document.createElement('canvas');
-    lastFrameCache.width = OUT_W; lastFrameCache.height = OUT_H;
-    const lastFrameCacheCtx = lastFrameCache.getContext('2d', { alpha: false });
-    let lastEncodedElapsed = -1;
-    const frameDurSec = 1 / FPS;
-
-    const encodeOneFrame = (fromCache, elapsed) => {
-      const frameTimeUs = Math.round(elapsed * 1_000_000);
-      if (!fromCache) {
-        if (IS_JJ) {
-          _applyJJCanvasEffects(ctx, video, sx, sy, sw, sh, OUT_W, OUT_H, elapsed, subtitleOn, timedSubs);
-        } else {
-          try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
-          if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
-        }
-        lastFrameCacheCtx.drawImage(canvas, 0, 0); // simpan ke cache
-      } else {
-        ctx.drawImage(lastFrameCache, 0, 0); // gunakan cache
-      }
-      const vf = new VideoFrame(canvas, {
-        timestamp: frameTimeUs,
-        duration: Math.round(1_000_000 / FPS),
-      });
-      videoEncoder.encode(vf, { keyFrame: (frameCount % (FPS * 2) === 0) });
-      vf.close();
-      frameCount++;
-      lastEncodedElapsed = elapsed;
-    };
-
-    const processVideoTime = (vtSec) => {
-      // Guard: skip frame sebelum safeStart (bisa terjadi kalau seek tidak presisi)
-      if (vtSec < safeStart - 0.05) return;
-
-      // Guard: stop jika melewati safeEnd
-      if (vtSec >= safeEnd - 0.02) {
-        finish(true);
-        return;
-      }
-
-      const elapsed = Math.max(0, vtSec - safeStart);
-
-      // Interpolasi gap: isi frame yang hilang dengan frame cache
-      if (lastEncodedElapsed >= 0) {
-        const gap = elapsed - lastEncodedElapsed;
-        if (gap > frameDurSec * 1.6) {
-          // Isi maksimal 8 frame (267ms worth) agar tidak over-compensate gap besar
-          const fillCount = Math.min(Math.floor(gap / frameDurSec) - 1, 30);
-          for (let fi = 1; fi <= fillCount; fi++) {
-            const fe = lastEncodedElapsed + fi * frameDurSec;
-            if (fe < elapsed - 0.01) encodeOneFrame(true, fe);
-          }
-        }
-      }
-
-      encodeOneFrame(false, elapsed);
-      encodingStarted = true;
-
-      const pct = Math.min(75, 15 + Math.round((elapsed / actualDur) * 60));
-      setModalBar(pct, `Encoding frame ${frameCount}/${totalFrames}...`);
-    };
-
-    // ── rVFC path ─────────────────────────────────────────────────
-    const onRVFC = (now, meta) => {
-      const vt = meta.mediaTime;
-
-      // Skip kalau mediaTime belum sampai safeStart
-      if (vt < safeStart - 0.05) {
-        video.requestVideoFrameCallback(onRVFC);
-        return;
-      }
-
-      if (vt >= safeEnd - 0.02 || frameCount >= totalFrames) {
-        // Pastikan minimal encode 90% frame sebelum stop
-        if (frameCount >= Math.floor(totalFrames * 0.9) || vt >= safeEnd - 0.02) {
-          finish(true);
-          return;
-        }
-      }
-
-      if (vt !== lastDrawnTimeSec || lastDrawnTimeSec < 0) {
-        lastDrawnTimeSec = vt;
-        processVideoTime(vt);
-      }
-      if (!settled) video.requestVideoFrameCallback(onRVFC);
-    };
-
-    // ── rAF fallback ──────────────────────────────────────────────
-    const onRAF = () => {
-      if (settled) return;
-      const vt = video.currentTime;
-      if (vt < safeStart - 0.05) { rafHandle = requestAnimationFrame(onRAF); return; }
-      if (vt >= safeEnd - 0.02 || frameCount >= totalFrames || video.ended) {
-        if (frameCount >= Math.floor(totalFrames * 0.9) || vt >= safeEnd - 0.02 || video.ended) {
-          finish(true);
-          return;
-        }
-      }
-      if (vt !== lastDrawnTimeSec && video.readyState >= 3) {
-        lastDrawnTimeSec = vt;
-        processVideoTime(vt);
-      }
-      rafHandle = requestAnimationFrame(onRAF);
-    };
-
-    // ── Wrap res/rej agar safetyTimer selalu di-clear ──────────────
-    let settled = false;
-    const finish = (ok, errMsg) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(safetyTimer);
-      if (rafHandle) cancelAnimationFrame(rafHandle);
-      video.pause();
-      if (ok) res();
-      else rej(new Error(errMsg || 'Encoding gagal'));
-    };
-
-    // Safety timeout — diberi ruang 3x durasi + 30s buffer
-    const safetyMs = (actualDur * 3 + 30) * 1000;
-    const safetyTimer = setTimeout(() => {
-      if (frameCount > 5) finish(true); // ada frame cukup → simpan hasil
-      else finish(false, `Encoding timeout (${frameCount} frame). Coba kualitas lebih rendah atau segmen lebih pendek.`);
-    }, safetyMs);
-
-    // ── Mulai play — seek sudah selesai di atas ───────────────────
-    video.muted = (audioCtx !== null) ? false : true;
-
-    // Fallback: kalau play() ditolak autoplay policy, paksa muted lalu retry
-    const startPlay = () => {
-      if (hasRVFC) video.requestVideoFrameCallback(onRVFC);
-      video.play()
-        .then(() => {
-          if (!hasRVFC) {
-            rafHandle = requestAnimationFrame(onRAF);
-          } else {
-            // Watchdog: kalau rVFC tidak menghasilkan frame dalam 2s, fallback ke rAF
-            setTimeout(() => {
-              if (!settled && frameCount === 0) {
-                console.warn('rVFC tidak menghasilkan frame, fallback ke rAF');
-                rafHandle = requestAnimationFrame(onRAF);
-              }
-            }, 2000);
-          }
-        })
-        .catch(() => {
-          // Autoplay ditolak → paksa muted dan retry
-          console.warn('play() rejected, retrying muted');
-          video.muted = true;
-          video.play()
-            .then(() => { if (!hasRVFC) rafHandle = requestAnimationFrame(onRAF); else {
-              setTimeout(() => { if (!settled && frameCount === 0) rafHandle = requestAnimationFrame(onRAF); }, 2000);
-            }})
-            .catch(e => finish(false, 'Video tidak bisa diputar: ' + e.message));
-        });
-    };
-    startPlay();
-  });
-
-  // Stop audio capture SEGERA — disconnect scriptNode supaya tidak capture audio ekstra
-  if (_wcScriptNode) {
-    try { _wcScriptNode.disconnect(); } catch(e) {}
-    try { _wcScriptNode.onaudioprocess = null; } catch(e) {}
-  }
-  if (_wcSrcNode) { try { _wcSrcNode.disconnect(); } catch(e) {} }
-  // Stop video
-  video.pause();
-  if (audioCtx) { try { audioCtx.close(); } catch(e) {} }
-
-  setModalBar(80, 'Menyelesaikan encoding...');
-
-  // Flush encoders
-  await videoEncoder.flush();
-  if (audioEncoder && audioEncoder.state !== 'closed') {
-    try { await audioEncoder.flush(); } catch(e) {}
-  }
-  videoEncoder.close();
-  if (audioEncoder) { try { audioEncoder.close(); } catch(e) {} }
-
-  muxer.finalize();
-  cleanup();
-
-  setModalBar(95, 'Menyusun file MP4...');
-
-  const buffer = target.buffer;
-  const blob = new Blob([buffer], { type: 'video/mp4' });
-  return blob;
-}
-
-// ─── Helper: JJ canvas effects (reuse existing _gaya state) ───────
-function _applyJJCanvasEffects(ctx, video, sx, sy, sw, sh, OUT_W, OUT_H, elapsed, subtitleOn, timedSubs) {
-  // Gambar frame dasar
-  try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-  // Subtitle jika aktif
-  if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
-}
-
-// ─── Helper: draw subtitles ────────────────────────────────────────
+// ── Helper: draw subtitles ke canvas (dipakai saat preview) ────────
 function _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H) {
   if (!timedSubs || !timedSubs.length) return;
   const sub = timedSubs.find(s => elapsed >= s.start && elapsed < s.end);
@@ -1252,7 +811,114 @@ function _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H) {
   ctx.restore();
 }
 
-// ─── JALUR 2: MediaRecorder fallback ─────────────────────────────
+// ── Fungsi utama: potong & encode video via FFmpeg.wasm ────────────
+async function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[], quality='720p') {
+  const qualityMap = {
+    '360p':  { w:360,  h:640,  crf:28, preset:'faster' },
+    '720p':  { w:720,  h:1280, crf:23, preset:'fast'   },
+    '1080p': { w:1080, h:1920, crf:20, preset:'fast'   },
+  };
+  const { w: OUT_W, h: OUT_H, crf: CRF, preset: PRESET } = qualityMap[quality] || qualityMap['720p'];
+
+  const dur = Math.max(1, endSec - startSec);
+  const startStr = _secToFFmpegTime(startSec);
+  const durStr   = _secToFFmpegTime(dur);
+
+  setModalBar(10, 'Memuat FFmpeg...');
+
+  let ffpkg;
+  try {
+    ffpkg = await loadFFmpeg();
+  } catch(e) {
+    // FFmpeg gagal load (jaringan/WASM) → fallback ke MediaRecorder
+    console.warn('FFmpeg load gagal, fallback ke MediaRecorder:', e);
+    setModalBar(15, 'FFmpeg tidak tersedia, menggunakan metode alternatif...');
+    return _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OUT_W, OUT_H, 4_000_000);
+  }
+
+  const { ff, fetchFile } = ffpkg;
+
+  setModalBar(20, 'Membaca file video...');
+
+  // Tulis file input ke filesystem virtual FFmpeg
+  const ext = file.name.split('.').pop().toLowerCase() || 'mp4';
+  const inputName  = `input.${ext}`;
+  const outputName = 'output.mp4';
+
+  ff.on('progress', ({ progress }) => {
+    const pct = Math.round(20 + Math.min(progress, 1) * 65);
+    setModalBar(pct, `Encoding... ${Math.round((progress||0)*100)}%`);
+  });
+
+  try {
+    await ff.writeFile(inputName, await fetchFile(file));
+  } catch(e) {
+    throw new Error('Gagal membaca file: ' + e.message);
+  }
+
+  setModalBar(25, 'Memulai encoding...');
+
+  // Bangun filter video: scale + crop ke portrait + subtitle
+  const scaleFilter = `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H}`;
+
+  // Subtitle filter — buat file SRT sementara jika ada
+  let subtitleFilter = '';
+  if (subtitleOn && timedSubs && timedSubs.length > 0) {
+    const srt = _timedSubsToSRT(timedSubs);
+    await ff.writeFile('subs.srt', srt);
+    subtitleFilter = `,subtitles=subs.srt:force_style='FontSize=18,Bold=1,Outline=2,Shadow=1,Alignment=2'`;
+  }
+
+  const vf = scaleFilter + subtitleFilter;
+
+  // Jalankan FFmpeg — potong + encode H.264
+  const ffArgs = [
+    '-ss',       startStr,       // seek SEBELUM input = fast seek
+    '-i',        inputName,
+    '-t',        durStr,
+    '-vf',       vf,
+    '-c:v',      'libx264',
+    '-crf',      String(CRF),
+    '-preset',   PRESET,
+    '-profile:v','baseline',     // kompatibel maksimal
+    '-level',    '4.0',
+    '-c:a',      'aac',
+    '-b:a',      '128k',
+    '-movflags', '+faststart',   // moov atom di depan untuk streaming
+    '-avoid_negative_ts', 'make_zero',
+    outputName,
+  ];
+
+  try {
+    await ff.exec(ffArgs);
+  } catch(e) {
+    // Bersihkan dan lempar error
+    try { await ff.deleteFile(inputName); } catch(_) {}
+    try { await ff.deleteFile('subs.srt'); } catch(_) {}
+    throw new Error('FFmpeg encoding gagal: ' + e.message);
+  }
+
+  setModalBar(88, 'Membaca hasil...');
+
+  let data;
+  try {
+    data = await ff.readFile(outputName);
+  } catch(e) {
+    throw new Error('Gagal membaca output FFmpeg: ' + e.message);
+  }
+
+  // Bersihkan file virtual
+  try { await ff.deleteFile(inputName);  } catch(_) {}
+  try { await ff.deleteFile(outputName); } catch(_) {}
+  try { await ff.deleteFile('subs.srt'); } catch(_) {}
+
+  setModalBar(95, 'Menyusun file MP4...');
+
+  const blob = new Blob([data.buffer], { type: 'video/mp4' });
+  return blob;
+}
+
+// ── Fallback MediaRecorder (dipakai jika FFmpeg.wasm gagal load) ───
 function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OUT_W, OUT_H, VBR) {
   return new Promise((resolve, reject) => {
     const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
@@ -1268,7 +934,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
     video.muted = true;
     video.preload = 'auto';
     video.playsInline = true;
-    video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:1px;height:1px;top:-9999px;left:-9999px';
+    video.style.cssText = 'position:fixed;opacity:0.001;pointer-events:none;width:2px;height:2px;top:0;left:0';
     document.body.appendChild(video);
 
     let done = false;
@@ -1280,32 +946,26 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
     };
 
     video.onerror = () => {
-      const code = video.error ? video.error.code : 0;
-      const msgs = {1:'Proses dibatalkan',2:'Error baca file',3:'Format tidak bisa di-decode — gunakan MP4 H.264',4:'Format tidak didukung browser'};
       cleanup();
-      reject(new Error(msgs[code] || 'Gagal membaca video (kode '+code+')'));
+      reject(new Error('Format video tidak didukung browser'));
     };
 
-    const IS_JJ = (typeof _gaya !== 'undefined') && _gaya === 'jj';
-    const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout — video terlalu besar atau format tidak didukung')); }, IS_JJ ? 90000 : 60000);
+    const hardTimeout = setTimeout(() => { cleanup(); reject(new Error('Timeout — coba kualitas lebih rendah')); }, 90000);
 
     video.addEventListener('loadedmetadata', () => {
       clearTimeout(hardTimeout);
 
-      const getRealDuration = () => new Promise(res => {
+      const getRealDur = () => new Promise(res => {
         const d = video.duration;
         if (isFinite(d) && d > 0 && d < 86400) { res(d); return; }
-        const onSeeked = () => res(isFinite(video.duration) && video.duration > 0 ? video.duration : 3600);
-        video.addEventListener('seeked', onSeeked, { once: true });
-        try { video.currentTime = 99999; } catch(e) { res(3600); }
+        video.addEventListener('seeked', () => res(isFinite(video.duration) ? video.duration : endSec + 5), { once: true });
+        try { video.currentTime = 99999; } catch(e) { res(endSec + 5); }
       });
 
-      getRealDuration().then(videoDur => {
-        const requestedDur = Math.max(1, endSec - startSec);
-        let safeStart = Math.max(0, Math.min(startSec, videoDur - 1));
-        let safeEnd   = Math.min(endSec, videoDur);
-        if (safeEnd - safeStart < 1) { safeStart = Math.max(0, safeEnd - requestedDur); }
-        if (safeEnd - safeStart <= 0) { cleanup(); reject(new Error('Video lebih pendek dari durasi klip')); return; }
+      getRealDur().then(videoDur => {
+        const safeStart = Math.max(0, Math.min(startSec, videoDur - 1));
+        const safeEnd   = Math.min(endSec, videoDur);
+        const requestedDur = Math.max(1, safeEnd - safeStart);
 
         const vw = video.videoWidth  || OUT_W;
         const vh = video.videoHeight || OUT_H;
@@ -1316,319 +976,133 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
         else                         { sh = Math.round(vw / targetRatio); sy = Math.round((vh-sh)/2); }
 
         video.addEventListener('seeked', () => {
-          startMRRecording(video, safeStart, safeEnd, requestedDur, sx, sy, sw, sh);
-        }, { once: true });
-        video.currentTime = safeStart;
-      });
-    }, { once: true });
+          // Gambar frame pertama ke canvas sebelum captureStream
+          try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
+          const canvasStream = canvas.captureStream(30);
+          const canvasVideoTrack = canvasStream.getVideoTracks()[0];
 
-    const IS_JJ_AUDIO = IS_JJ;
-    const USE_JJ_REF_BEATS   = IS_JJ && (typeof _useJJRef !== 'undefined') && _useJJRef && (typeof _jjRefBeats !== 'undefined') && _jjRefBeats.length > 4;
-    const USE_CUSTOM_BEATS   = IS_JJ && !USE_JJ_REF_BEATS && (typeof _useCustomMusik !== 'undefined') && _useCustomMusik && (typeof _customMusikBeats !== 'undefined') && _customMusikBeats.length > 4;
-    const ACTIVE_BEATS  = USE_JJ_REF_BEATS ? _jjRefBeats : (USE_CUSTOM_BEATS ? _customMusikBeats : []);
-    const ACTIVE_BPM    = USE_JJ_REF_BEATS ? _jjRefBpm   : (USE_CUSTOM_BEATS ? _customMusikBpm   : 0);
-    const JJ_BPM     = ACTIVE_BPM > 0 ? ACTIVE_BPM : ((IS_JJ && (typeof _selectedTrack !== 'undefined') && _selectedTrack) ? _selectedTrack.bpm : 140);
-    const JJ_STYLE   = (IS_JJ && (typeof _selectedTrack !== 'undefined') && _selectedTrack) ? (_selectedTrack.style||'jd') : 'jd';
-    const JJ_BEAT    = 60 / JJ_BPM;
-    const JJ_HALF    = JJ_BEAT / 2;
-    const JJ_QUARTER = JJ_BEAT / 4;
-
-    let jjFlashAlpha=0, jjShakeX=0, jjShakeY=0, jjZoom=1.0;
-    let jjLastBeat=-1, jjLastHalf=-1, jjLastQuarter=-1, jjRgbShift=0;
-    let jjScanlineY=0, jjGlitchBlock=null, jjGlitchTimer=0;
-    let jjStrobeOn=false, jjVignetteColor='#000', jjTunnelPhase=0;
-    let jjRotate=0, jjSkewX=0, jjInvert=false, jjInvertTimer=0;
-    let jjWarpStrength=0, jjLastBar=-1, jjDropActive=false, jjDropTimer=0;
-
-    const JJ_PALETTES = {
-      jd:         ['#ffe600','#ff0080','#00f5ff','#ffffff','#ff6600','#00ff88'],
-      slowbass:   ['#00c8ff','#ffffff','#0066ff','#00f5ff','#aaddff','#ffffff'],
-      indobounce: ['#ff2878','#ffe600','#ff0080','#ffffff','#ff6600','#00ff88'],
-      koplo:      ['#ff9800','#ffeb3b','#ff5722','#ffffff','#ff9800','#e91e63'],
-      breakbeat:  ['#00dcff','#ffffff','#7c3aed','#00ff88','#00dcff','#ff0080'],
-      bassbrutal: ['#c800ff','#ff0040','#ffffff','#00f5ff','#c800ff','#ffe600'],
-      phonk:      ['#cc44ff','#ff0040','#220011','#8800ff','#ff0040','#440022'],
-      hype:       ['#00f5ff','#ffffff','#00ff88','#ffe600','#ff0080','#7c3aed'],
-      trap:       ['#ff6600','#ffffff','#ff3300','#ffaa00','#00f5ff','#ff6600'],
-      cinematic:  ['#ffd700','#ffffff','#c0c0c0','#ffe066','#aaddff','#c0c0c0'],
-    };
-    const jjPalette = JJ_PALETTES[JJ_STYLE] || JJ_PALETTES.jd;
-
-    function startMRRecording(video, safeStart, safeEnd, requestedDur, sx, sy, sw, sh) {
-      let combinedStream;
-      let audioCtx = null;
-
-      // FIX: gambar frame pertama ke canvas DULU sebelum captureStream()
-      // agar video track tidak kosong saat MediaRecorder mulai
-      try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
-      const canvasStream = canvas.captureStream(30);
-
-      // FIX: pastikan video track dari canvasStream benar-benar aktif
-      const canvasVideoTrack = canvasStream.getVideoTracks()[0];
-
-      try {
-        if (IS_JJ_AUDIO && ((typeof _selectedTrack !== 'undefined' && _selectedTrack) || USE_JJ_REF_BEATS || USE_CUSTOM_BEATS)) {
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          video.muted = true;
-          const dest = audioCtx.createMediaStreamDestination();
-
-          const playMusik = (buf, loopStart, loopEnd) => {
-            const src = audioCtx.createBufferSource();
-            src.buffer = buf;
-            if (loopStart > 0 || loopEnd > loopStart) {
-              src.loop = true; src.loopStart = loopStart;
-              src.loopEnd = loopEnd > loopStart + 1 ? loopEnd : buf.duration;
-            } else { src.loop = true; }
-            const gain = audioCtx.createGain(); gain.gain.value = 0.9;
-            src.connect(gain); gain.connect(dest); gain.connect(audioCtx.destination);
-            src.start(0, loopStart > 0 ? loopStart : 0);
-          };
-
-          let musikReady;
-          if (USE_JJ_REF_BEATS && (typeof _jjRefAudioBuffer !== 'undefined') && _jjRefAudioBuffer) {
-            playMusik(_jjRefAudioBuffer, _jjRefLoopStart||0, _jjRefLoopEnd||0);
-            musikReady = Promise.resolve();
-          } else if (USE_CUSTOM_BEATS && (typeof _customMusikBuffer !== 'undefined') && _customMusikBuffer) {
-            playMusik(_customMusikBuffer, _customMusikLoopStart||0, _customMusikLoopEnd||0);
-            musikReady = Promise.resolve();
-          } else if (typeof loadTrackBuffer !== 'undefined' && _selectedTrack) {
-            musikReady = loadTrackBuffer(audioCtx, _selectedTrack, requestedDur + 4)
-              .then(buf => playMusik(buf, 0, buf.duration))
-              .catch(e => console.warn('loadTrackBuffer:', e));
-          } else {
-            musikReady = Promise.resolve();
-          }
-
-          musikReady.then(() => {
-            setTimeout(() => {
-              const audioTracks = dest.stream.getAudioTracks();
-              combinedStream = audioTracks.length > 0
-                ? new MediaStream([canvasVideoTrack, audioTracks[0]])
-                : canvasStream;
-              beginRecording(combinedStream);
-            }, 20);
-          });
-          return;
-
-        } else {
-          video.muted = false;
+          let combinedStream = canvasStream;
+          let audioCtx = null;
           try {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            if (audioCtx.state === 'suspended') audioCtx.resume();
+            video.muted = false;
             const dest = audioCtx.createMediaStreamDestination();
             const srcNode = audioCtx.createMediaElementSource(video);
             srcNode.connect(dest);
             srcNode.connect(audioCtx.destination);
             const audioTrack = dest.stream.getAudioTracks()[0];
-            combinedStream = audioTrack
-              ? new MediaStream([canvasVideoTrack, audioTrack])
-              : canvasStream;
-          } catch(audioErr) {
-            console.warn('Audio via AudioContext gagal, fallback:', audioErr);
-            try {
-              const videoStream = video.captureStream ? video.captureStream(30) : null;
-              if (videoStream) {
-                const audioTracks = videoStream.getAudioTracks();
-                combinedStream = audioTracks.length > 0
-                  ? new MediaStream([canvasVideoTrack, audioTracks[0]])
-                  : canvasStream;
-              } else { combinedStream = canvasStream; }
-            } catch(e2) { combinedStream = canvasStream; }
-          }
-        }
-      } catch(outerAudioErr) {
-        console.warn('Audio setup error:', outerAudioErr);
-        combinedStream = canvasStream;
-      }
-
-      if (IS_JJ_AUDIO && ((typeof _selectedTrack !== 'undefined' && _selectedTrack) || USE_JJ_REF_BEATS || USE_CUSTOM_BEATS)) return;
-      beginRecording(combinedStream);
-
-      function beginRecording(stream) {
-        let rec;
-        try { rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 }); }
-        catch(e) { try { rec = new MediaRecorder(stream, { mimeType }); } catch(e2) { rec = new MediaRecorder(stream); } }
-
-        const chunks = [];
-        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-        const FPS = 30, frameDur = 1000/FPS;
-        let lastFrameAt = 0, rafHandle = null;
-        let recordingStartTime = null;
-
-        let _lastFrameCanvas = null, _lastFrameCtx = null, _videoIsStalled = false;
-        if (!IS_JJ) {
-          _lastFrameCanvas = document.createElement('canvas');
-          _lastFrameCanvas.width = OUT_W; _lastFrameCanvas.height = OUT_H;
-          _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
-        }
-
-        let _lastSeenTime = -1, _lastSeenAt = 0, _stallWatchdogActive = false;
-
-        const drawFrame = (now) => {
-          rafHandle = requestAnimationFrame(drawFrame);
-          if (now - lastFrameAt < frameDur - 1) return;
-          lastFrameAt = now;
-          if (!recordingStartTime) { recordingStartTime = now; _lastSeenAt = now; }
-
-          // Stall watchdog: kalau currentTime tidak bergerak > 3 detik, paksa resume
-          const vt = video.currentTime;
-          if (vt !== _lastSeenTime) {
-            _lastSeenTime = vt;
-            _lastSeenAt = now;
-            _stallWatchdogActive = false;
-          } else if (!video.paused && !video.ended && (now - _lastSeenAt) > 3000 && !_stallWatchdogActive) {
-            _stallWatchdogActive = true;
-            console.warn('Stall watchdog: currentTime stuck at', vt, '— forcing resume');
-            tryResumeVideo();
+            if (audioTrack) combinedStream = new MediaStream([canvasVideoTrack, audioTrack]);
+          } catch(ae) {
+            console.warn('Audio fallback setup:', ae);
           }
 
-          // Update stall state berdasarkan readyState video
-          if (!IS_JJ && video.readyState < 2) _videoIsStalled = true;
-          else if (!IS_JJ && video.readyState >= 2 && !video.paused) _videoIsStalled = false;
-          const wallElapsed = (now - recordingStartTime) / 1000;
-          const videoElapsed = Math.max(0, video.currentTime - safeStart);
-          const elapsed = Math.min(Math.max(0,
-            videoElapsed > 0.05 ? videoElapsed : wallElapsed
-          ), requestedDur);
+          let rec;
+          try { rec = new MediaRecorder(combinedStream, { mimeType, videoBitsPerSecond: VBR }); }
+          catch(e) { rec = new MediaRecorder(combinedStream); }
 
-          if (IS_JJ) {
-            ctx.save();
-            ctx.setTransform(1,0,0,1,0,0);
-            try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-            ctx.restore();
-          } else {
-            if (!_videoIsStalled && video.readyState >= 2) {
-              try {
-                ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H);
-                if (_lastFrameCtx) _lastFrameCtx.drawImage(canvas, 0, 0);
-              } catch(e) {}
-            } else if (_lastFrameCanvas) {
-              try { ctx.drawImage(_lastFrameCanvas, 0, 0); } catch(e) {}
+          const chunks = [];
+          rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+          const FPS = 30, frameDur = 1000 / FPS;
+          let lastFrameAt = 0, rafHandle = null;
+          let lastSeenTime = -1, lastSeenAt = 0;
+
+          const drawFrame = (now) => {
+            rafHandle = requestAnimationFrame(drawFrame);
+            if (now - lastFrameAt < frameDur - 1) return;
+            lastFrameAt = now;
+
+            // Stall watchdog
+            const vt = video.currentTime;
+            if (vt !== lastSeenTime) { lastSeenTime = vt; lastSeenAt = now; }
+            else if (!video.paused && !video.ended && (now - lastSeenAt) > 3000) {
+              lastSeenAt = now;
+              if (video.readyState < 2) { video.currentTime = vt; }
+              else { video.play().catch(()=>{}); }
             }
+
+            if (video.readyState >= 2) {
+              try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e) {}
+            }
+            const elapsed = Math.max(0, vt - safeStart);
             if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
-          }
-
-          // Paksa canvas track update — beberapa browser butuh requestFrame() eksplisit
-          const vTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
-          if (vTrack && typeof vTrack.requestFrame === 'function') {
-            try { vTrack.requestFrame(); } catch(e) {}
-          }
-        };
-
-        rec.onstop = () => {
-          cancelAnimationFrame(rafHandle);
-          if (audioCtx) try { audioCtx.close(); } catch(e) {}
-          cleanup();
-          if (chunks.length === 0) { reject(new Error('Tidak ada data terekam')); return; }
-          resolve(new Blob(chunks, { type: mimeType }));
-        };
-
-        let stopTimer = null;
-        let totalStallMs = 0, stallStart = null;
-        let recActualStartWall = null;
-        let _audioKeepAlive = null;
-        let _stallRetryTimer = null;
-
-        const scheduleStop = (extraMs = 0) => {
-          if (stopTimer) clearTimeout(stopTimer);
-          // Gunakan video.currentTime untuk sisa durasi, bukan wall clock
-          // Ini immune terhadap stall — timer hanya jalan saat video benar-benar berputar
-          const videoElapsed = Math.max(0, video.currentTime - safeStart);
-          const remaining = Math.max(0, (requestedDur - videoElapsed) * 1000);
-          // Tambah buffer: 2s untuk flush encoder + extraMs
-          const delay = remaining + 2000 + extraMs;
-          stopTimer = setTimeout(() => {
-            // Double-check: kalau video masih stall, tunda lagi
-            const ve2 = Math.max(0, video.currentTime - safeStart);
-            if (ve2 < requestedDur - 2 && !video.ended && !video.paused) {
-              scheduleStop(500); // reschedule
-              return;
+            if (canvasVideoTrack && typeof canvasVideoTrack.requestFrame === 'function') {
+              try { canvasVideoTrack.requestFrame(); } catch(e) {}
             }
-            try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
-          }, delay);
-        };
+          };
 
-        const tryResumeVideo = () => {
-          if (done) return;
-          if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-          if (video.paused) {
-            video.play().catch(() => {});
-          } else if (video.readyState < 2) {
-            // Buffer habis — seek ke posisi terakhir untuk re-buffer
-            const pos = video.currentTime;
-            video.currentTime = pos;
-          }
-        };
+          rec.onstop = () => {
+            cancelAnimationFrame(rafHandle);
+            if (audioCtx) try { audioCtx.close(); } catch(e) {}
+            cleanup();
+            if (chunks.length === 0) { reject(new Error('Tidak ada data terekam')); return; }
+            resolve(new Blob(chunks, { type: mimeType }));
+          };
 
-        video.addEventListener('waiting', () => {
-          stallStart = performance.now();
-          _videoIsStalled = true;
-          if (stopTimer) clearTimeout(stopTimer); // pause timer saat stall
-          if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
-          _stallRetryTimer = setTimeout(tryResumeVideo, 400);
-        });
-        video.addEventListener('stalled', () => {
-          if (!stallStart) stallStart = performance.now();
-          _videoIsStalled = true;
-          if (stopTimer) clearTimeout(stopTimer); // pause timer saat stall
-          if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
-          _stallRetryTimer = setTimeout(tryResumeVideo, 400);
-        });
-        video.addEventListener('playing', () => {
-          if (_stallRetryTimer) { clearTimeout(_stallRetryTimer); _stallRetryTimer = null; }
-          _videoIsStalled = false;
-          if (stallStart !== null) {
-            totalStallMs += performance.now() - stallStart;
-            stallStart = null;
-          }
-          scheduleStop(); // reschedule berdasarkan video.currentTime terkini
-        });
-        video.addEventListener('ended', () => {
-          const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
-          if (elapsed < requestedDur - 1.5) return;
-          if (stopTimer) clearTimeout(stopTimer);
-          setTimeout(() => { try { rec.stop(); } catch(e) {} }, IS_JJ ? 500 : 200);
-        }, { once: true });
+          // Stop timer berbasis video.currentTime bukan wall clock
+          let stopTimer = null;
+          const scheduleStop = () => {
+            if (stopTimer) clearTimeout(stopTimer);
+            const videoElapsed = Math.max(0, video.currentTime - safeStart);
+            const remaining = Math.max(0, (requestedDur - videoElapsed) * 1000);
+            stopTimer = setTimeout(() => {
+              const ve2 = Math.max(0, video.currentTime - safeStart);
+              if (ve2 < requestedDur - 2 && !video.ended) { scheduleStop(); return; }
+              try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
+            }, remaining + 2000);
+          };
 
-        const doStartRec = () => {
-          recActualStartWall = performance.now();
-          recordingStartTime = recActualStartWall;
-          lastFrameAt = recActualStartWall - frameDur; // pastikan frame pertama langsung diproses
-          // FIX: mulai rec.start() dulu, LALU drawFrame loop
-          // (canvas sudah ada isinya dari frame yang digambar sebelum captureStream)
+          video.addEventListener('waiting', () => {
+            if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+          });
+          video.addEventListener('playing', () => { scheduleStop(); });
+          video.addEventListener('ended', () => {
+            if (stopTimer) clearTimeout(stopTimer);
+            setTimeout(() => { try { rec.stop(); } catch(e) {} }, 300);
+          }, { once: true });
+
           rec.start(200);
           rafHandle = requestAnimationFrame(drawFrame);
           scheduleStop();
-          if (!IS_JJ && video.paused) video.play().catch(()=>{});
-        };
 
-        const startAfterFirstFrame = () => {
-          if (!IS_JJ) {
-            let started = false;
-            const kickStart = () => {
-              if (started) return; started = true;
-              if (_lastFrameCanvas && video.readyState >= 2) {
-                try { _lastFrameCtx.drawImage(video, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H); } catch(e){}
-              }
-              _videoIsStalled = false;
-              doStartRec();
-            };
-            if (video.readyState >= 2) kickStart();
-            else {
-              video.addEventListener('canplay', kickStart, { once: true });
-              setTimeout(() => { video.removeEventListener('canplay', kickStart); if (!started) kickStart(); }, 500);
-            }
-          } else { doStartRec(); }
-        };
+          video.play().catch(() => {
+            video.muted = true;
+            video.play().catch(e => reject(new Error('Video tidak bisa diputar: ' + e.message)));
+          });
+        }, { once: true });
 
-        video.play().then(startAfterFirstFrame).catch(e => { doStartRec(); });
-      }
-    }
+        video.currentTime = safeStart;
+      });
+    }, { once: true });
 
     video.load();
   });
 }
+
+// ── Utils FFmpeg ───────────────────────────────────────────────────
+function _secToFFmpegTime(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = (sec % 60).toFixed(3);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(6,'0')}`;
+}
+
+function _timedSubsToSRT(timedSubs) {
+  return timedSubs.map((s, i) => {
+    const start = _secToSRTTime(s.t || s.start || 0);
+    const end   = _secToSRTTime((s.t || s.start || 0) + 3);
+    return `${i+1}\n${start} --> ${end}\n${s.text}\n`;
+  }).join('\n');
+}
+
+function _secToSRTTime(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.round((sec % 1) * 1000);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+}
+
 
 
 

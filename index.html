@@ -813,8 +813,23 @@ function cutVideoSegment(file, startSec, endSec, subtitleOn=false, timedSubs=[],
     };
     const { w: OUT_W, h: OUT_H, vbr: VBR } = qualityMap[quality] || qualityMap['720p'];
 
-    // Deteksi mode
-    const useWebCodecs = await checkWebCodecsSupport();
+    // Cek apakah file punya duration yang bisa dibaca
+    // MediaRecorder WebM tidak punya duration header → WebCodecs tidak reliable
+    const hasDuration = await new Promise(res => {
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.src = URL.createObjectURL(file);
+      v.addEventListener('loadedmetadata', () => {
+        const ok = isFinite(v.duration) && v.duration > 0 && v.duration !== Infinity;
+        URL.revokeObjectURL(v.src);
+        res(ok);
+      }, { once: true });
+      v.addEventListener('error', () => { URL.revokeObjectURL(v.src); res(false); }, { once: true });
+      setTimeout(() => { URL.revokeObjectURL(v.src); res(false); }, 5000);
+    });
+
+    // Deteksi mode — skip WebCodecs jika duration tidak valid
+    const useWebCodecs = hasDuration && (await checkWebCodecsSupport());
     const mp4Mod = useWebCodecs ? await loadMp4Muxer() : null;
 
     if (useWebCodecs && mp4Mod) {
@@ -876,18 +891,25 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     video.load();
   });
 
-  // Dapat durasi nyata
+  // Dapat durasi nyata — MediaRecorder WebM sering tidak punya duration header
   let videoDur = video.duration;
-  if (!isFinite(videoDur) || videoDur <= 0) {
+  if (!isFinite(videoDur) || videoDur <= 0 || videoDur === Infinity) {
+    // Seek ke titik sangat jauh, browser akan clamp ke durasi nyata
     await new Promise(res => {
-      video.addEventListener('seeked', () => res(), { once: true });
+      let t = setTimeout(res, 5000);
+      video.addEventListener('seeked', () => { clearTimeout(t); res(); }, { once: true });
       video.currentTime = 999999;
     });
-    videoDur = isFinite(video.duration) ? video.duration : 3600;
+    videoDur = isFinite(video.duration) && video.duration > 0 ? video.duration : null;
   }
+  // Kalau durasi masih tidak valid, percaya saja pada endSec dari user/AI
+  // dan beri ruang buffer +2s agar tidak terpotong
+  const safeDur = (videoDur && isFinite(videoDur) && videoDur > endSec * 0.5)
+    ? videoDur
+    : endSec + 2;
 
-  const safeStart = Math.max(0, Math.min(startSec, videoDur - 0.5));
-  const safeEnd   = Math.min(endSec, videoDur);
+  const safeStart = Math.max(0, Math.min(startSec, safeDur - 0.5));
+  const safeEnd   = Math.min(endSec, safeDur);
   if (safeEnd - safeStart <= 0) { cleanup(); throw new Error('Video lebih pendek dari durasi klip'); }
   const actualDur = safeEnd - safeStart;
 
@@ -1088,8 +1110,11 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       }
 
       if (vt >= safeEnd - 0.02 || frameCount >= totalFrames) {
-        finish(true);
-        return;
+        // Pastikan minimal encode 90% frame sebelum stop
+        if (frameCount >= Math.floor(totalFrames * 0.9) || vt >= safeEnd - 0.02) {
+          finish(true);
+          return;
+        }
       }
 
       if (vt !== lastDrawnTimeSec || lastDrawnTimeSec < 0) {
@@ -1105,8 +1130,10 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
       const vt = video.currentTime;
       if (vt < safeStart - 0.05) { rafHandle = requestAnimationFrame(onRAF); return; }
       if (vt >= safeEnd - 0.02 || frameCount >= totalFrames || video.ended) {
-        finish(true);
-        return;
+        if (frameCount >= Math.floor(totalFrames * 0.9) || vt >= safeEnd - 0.02 || video.ended) {
+          finish(true);
+          return;
+        }
       }
       if (vt !== lastDrawnTimeSec && video.readyState >= 3) {
         lastDrawnTimeSec = vt;

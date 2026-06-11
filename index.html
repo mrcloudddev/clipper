@@ -1463,11 +1463,26 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
         }
 
+        let _lastSeenTime = -1, _lastSeenAt = 0, _stallWatchdogActive = false;
+
         const drawFrame = (now) => {
           rafHandle = requestAnimationFrame(drawFrame);
           if (now - lastFrameAt < frameDur - 1) return;
           lastFrameAt = now;
-          if (!recordingStartTime) recordingStartTime = now;
+          if (!recordingStartTime) { recordingStartTime = now; _lastSeenAt = now; }
+
+          // Stall watchdog: kalau currentTime tidak bergerak > 3 detik, paksa resume
+          const vt = video.currentTime;
+          if (vt !== _lastSeenTime) {
+            _lastSeenTime = vt;
+            _lastSeenAt = now;
+            _stallWatchdogActive = false;
+          } else if (!video.paused && !video.ended && (now - _lastSeenAt) > 3000 && !_stallWatchdogActive) {
+            _stallWatchdogActive = true;
+            console.warn('Stall watchdog: currentTime stuck at', vt, '— forcing resume');
+            tryResumeVideo();
+          }
+
           // Update stall state berdasarkan readyState video
           if (!IS_JJ && video.readyState < 2) _videoIsStalled = true;
           else if (!IS_JJ && video.readyState >= 2 && !video.paused) _videoIsStalled = false;
@@ -1494,7 +1509,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
             if (subtitleOn) _drawSubtitles(ctx, timedSubs, elapsed, OUT_W, OUT_H);
           }
 
-          // FIX: paksa canvas track update — beberapa browser butuh requestFrame() eksplisit
+          // Paksa canvas track update — beberapa browser butuh requestFrame() eksplisit
           const vTrack = stream.getVideoTracks && stream.getVideoTracks()[0];
           if (vTrack && typeof vTrack.requestFrame === 'function') {
             try { vTrack.requestFrame(); } catch(e) {}
@@ -1517,44 +1532,57 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
 
         const scheduleStop = (extraMs = 0) => {
           if (stopTimer) clearTimeout(stopTimer);
-          const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;
-          const remaining = Math.max(0, (requestedDur - elapsed) * 1000);
-          const stallPad = IS_JJ ? totalStallMs : Math.min(totalStallMs, 2000);
-          const delay = remaining + (IS_JJ ? 1200 : 600) + extraMs + stallPad;
+          // Gunakan video.currentTime untuk sisa durasi, bukan wall clock
+          // Ini immune terhadap stall — timer hanya jalan saat video benar-benar berputar
+          const videoElapsed = Math.max(0, video.currentTime - safeStart);
+          const remaining = Math.max(0, (requestedDur - videoElapsed) * 1000);
+          // Tambah buffer: 2s untuk flush encoder + extraMs
+          const delay = remaining + 2000 + extraMs;
           stopTimer = setTimeout(() => {
+            // Double-check: kalau video masih stall, tunda lagi
+            const ve2 = Math.max(0, video.currentTime - safeStart);
+            if (ve2 < requestedDur - 2 && !video.ended && !video.paused) {
+              scheduleStop(500); // reschedule
+              return;
+            }
             try { video.pause(); rec.stop(); } catch(e) { cleanup(); reject(e); }
           }, delay);
         };
 
         const tryResumeVideo = () => {
-          if (!IS_JJ && video.paused && !done) video.play().catch(()=>{});
+          if (done) return;
           if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+          if (video.paused) {
+            video.play().catch(() => {});
+          } else if (video.readyState < 2) {
+            // Buffer habis — seek ke posisi terakhir untuk re-buffer
+            const pos = video.currentTime;
+            video.currentTime = pos;
+          }
         };
 
         video.addEventListener('waiting', () => {
           stallStart = performance.now();
-          _videoIsStalled = true;  // FIX: tandai stall agar drawFrame pakai cache
-          if (!IS_JJ) {
-            if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
-            _stallRetryTimer = setTimeout(tryResumeVideo, 300);
-          }
+          _videoIsStalled = true;
+          if (stopTimer) clearTimeout(stopTimer); // pause timer saat stall
+          if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
+          _stallRetryTimer = setTimeout(tryResumeVideo, 400);
         });
         video.addEventListener('stalled', () => {
           if (!stallStart) stallStart = performance.now();
-          _videoIsStalled = true;  // FIX: tandai stall agar drawFrame pakai cache
-          if (!IS_JJ) {
-            if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
-            _stallRetryTimer = setTimeout(tryResumeVideo, 300);
-          }
+          _videoIsStalled = true;
+          if (stopTimer) clearTimeout(stopTimer); // pause timer saat stall
+          if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
+          _stallRetryTimer = setTimeout(tryResumeVideo, 400);
         });
         video.addEventListener('playing', () => {
           if (_stallRetryTimer) { clearTimeout(_stallRetryTimer); _stallRetryTimer = null; }
-          _videoIsStalled = false;  // FIX: clear stall flag saat video kembali playing
+          _videoIsStalled = false;
           if (stallStart !== null) {
             totalStallMs += performance.now() - stallStart;
             stallStart = null;
-            scheduleStop();
           }
+          scheduleStop(); // reschedule berdasarkan video.currentTime terkini
         });
         video.addEventListener('ended', () => {
           const elapsed = recActualStartWall ? (performance.now() - recActualStartWall) / 1000 : 0;

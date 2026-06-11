@@ -855,7 +855,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
   const videoSrc = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.src = videoSrc;
-  video.muted = true;
+  video.muted = true; // sementara muted — akan di-unmute setelah audio pipeline siap
   video.preload = 'auto';
   video.playsInline = true;
   video.crossOrigin = 'anonymous';
@@ -946,6 +946,9 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
     // Expose ke scope luar agar bisa di-disconnect tepat saat video stop
     _wcScriptNode = scriptNode;
     _wcSrcNode = srcNode;
+    // FIX: unmute dulu SEBELUM createMediaElementSource sudah terlanjur, tapi
+    // pastikan audio pipeline siap dengan langsung set muted=false di sini
+    video.muted = false;
 
     scriptNode.onaudioprocess = (e) => {
       if (audioEncoder && audioEncoder.state === 'configured') {
@@ -972,7 +975,7 @@ async function _cutWithWebCodecs(file, startSec, endSec, subtitleOn, timedSubs, 
 
     srcNode.connect(scriptNode);
     scriptNode.connect(audioCtx.destination);
-    video.muted = false;
+    // FIX: video.muted = false sudah di-set sebelum koneksi audio di atas
   } catch(audioErr) {
     console.warn('Audio WebCodecs setup gagal (video-only):', audioErr);
     video.muted = true;
@@ -1414,16 +1417,22 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
         }
 
+        // FIX: update _videoIsStalled berdasarkan readyState di setiap frame
         const drawFrame = (now) => {
           rafHandle = requestAnimationFrame(drawFrame);
           if (now - lastFrameAt < frameDur - 1) return;
           lastFrameAt = now;
           if (!recordingStartTime) recordingStartTime = now;
+          // Update stall state berdasarkan readyState video
+          if (!IS_JJ && video.readyState < 2) _videoIsStalled = true;
+          else if (!IS_JJ && video.readyState >= 2 && !video.paused) _videoIsStalled = false;
           const wallElapsed = (now - recordingStartTime) / 1000;
           const videoElapsed = Math.max(0, video.currentTime - safeStart);
-          const elapsed = Math.min(Math.max(0, IS_JJ
-            ? (videoElapsed > 0.05 ? videoElapsed : wallElapsed)
-            : wallElapsed), requestedDur);
+          // FIX: pakai videoElapsed untuk semua mode agar audio/video sync,
+          // gunakan wallElapsed hanya sebagai fallback saat video belum mulai jalan
+          const elapsed = Math.min(Math.max(0,
+            videoElapsed > 0.05 ? videoElapsed : wallElapsed
+          ), requestedDur);
 
           if (IS_JJ) {
             // JJ effects dibawa dari original — simplified inline
@@ -1476,6 +1485,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
 
         video.addEventListener('waiting', () => {
           stallStart = performance.now();
+          _videoIsStalled = true;  // FIX: tandai stall agar drawFrame pakai cache
           if (!IS_JJ) {
             if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
             _stallRetryTimer = setTimeout(tryResumeVideo, 300);
@@ -1483,6 +1493,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
         });
         video.addEventListener('stalled', () => {
           if (!stallStart) stallStart = performance.now();
+          _videoIsStalled = true;  // FIX: tandai stall agar drawFrame pakai cache
           if (!IS_JJ) {
             if (_stallRetryTimer) clearTimeout(_stallRetryTimer);
             _stallRetryTimer = setTimeout(tryResumeVideo, 300);
@@ -1490,6 +1501,7 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
         });
         video.addEventListener('playing', () => {
           if (_stallRetryTimer) { clearTimeout(_stallRetryTimer); _stallRetryTimer = null; }
+          _videoIsStalled = false;  // FIX: clear stall flag saat video kembali playing
           if (stallStart !== null) {
             totalStallMs += performance.now() - stallStart;
             stallStart = null;

@@ -1424,25 +1424,6 @@ function _cutWithMediaRecorder(file, startSec, endSec, subtitleOn, timedSubs, OU
           _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
         }
 
-      function beginRecording(stream) {
-        let rec;
-        try { rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: VBR, audioBitsPerSecond: 128000 }); }
-        catch(e) { try { rec = new MediaRecorder(stream, { mimeType }); } catch(e2) { rec = new MediaRecorder(stream); } }
-
-        const chunks = [];
-        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-        const FPS = 30, frameDur = 1000/FPS;
-        let lastFrameAt = 0, rafHandle = null;
-        let recordingStartTime = null;
-
-        let _lastFrameCanvas = null, _lastFrameCtx = null, _videoIsStalled = false;
-        if (!IS_JJ) {
-          _lastFrameCanvas = document.createElement('canvas');
-          _lastFrameCanvas.width = OUT_W; _lastFrameCanvas.height = OUT_H;
-          _lastFrameCtx = _lastFrameCanvas.getContext('2d', { alpha: false });
-        }
-
         const drawFrame = (now) => {
           rafHandle = requestAnimationFrame(drawFrame);
           if (now - lastFrameAt < frameDur - 1) return;
